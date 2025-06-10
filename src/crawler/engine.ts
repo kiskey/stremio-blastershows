@@ -3,6 +3,7 @@ import cheerio from 'cheerio';
 import { config } from '../config';
 import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
 import { processThread } from './processor';
+import { logger } from '../utils/logger'; // Import the centralized logger
 
 /**
  * Interface for MagnetData as specified in requirements.
@@ -62,7 +63,7 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
         // Handle redirects if needed, e.g., update base URL
         const redirectUrl = response.headers.location;
         if (redirectUrl) {
-            console.warn(`Redirect detected from ${url} to ${redirectUrl}.`);
+            logger.warn(`Redirect detected from ${url} to ${redirectUrl}.`);
             // You might want to update config.FORUM_URL if the domain changes permanently.
             // For now, axios follows redirects automatically.
         }
@@ -70,21 +71,22 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
 
     return response.data;
   } catch (error: any) {
-    console.error(`Error fetching ${url}:`, error.message);
+    logger.error(`Error fetching ${url}:`, error);
     if (retries > 0) {
       const delay = Math.pow(2, (3 - retries)) * 1000; // Exponential backoff
-      console.log(`Retrying ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
+      logger.info(`Retrying ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchHtml(url, retries - 1);
     }
-    console.error(`Failed to fetch ${url} after multiple retries.`);
+    logger.error(`Failed to fetch ${url} after multiple retries.`);
     // Log error to Redis error queue (as per requirement)
-    redisClient.lpush('error_queue', JSON.stringify({
+    logger.logToRedisErrorQueue({
       timestamp: new Date().toISOString(),
       level: 'ERROR',
       message: `Failed to fetch URL: ${url}`,
-      error: error.message
-    }));
+      error: error.message,
+      url: url
+    });
     return null;
   }
 }
@@ -118,19 +120,19 @@ function discoverThreadUrls(html: string, baseUrl: string): string[] {
  */
 async function crawlForumPage(pageNum: number): Promise<boolean> {
   const url = `${config.FORUM_URL}${pageNum > 1 ? `page/${pageNum}/` : ''}`;
-  console.log(`Crawling forum page: ${url}`);
+  logger.info(`Crawling forum page: ${url}`);
 
   const html = await fetchHtml(url);
   if (!html) {
-    console.warn(`Could not fetch HTML for page ${pageNum}. Assuming end of pagination.`);
+    logger.warn(`Could not fetch HTML for page ${pageNum}. Assuming end of pagination.`);
     return false; // Indicates end of pagination or critical error
   }
 
   const threadUrls = discoverThreadUrls(html, url);
-  console.log(`Discovered ${threadUrls.length} threads on page ${pageNum}.`);
+  logger.info(`Discovered ${threadUrls.length} threads on page ${pageNum}.`);
 
   if (threadUrls.length === 0) {
-    console.log(`No new threads found on page ${pageNum}. Ending new page crawl.`);
+    logger.info(`No new threads found on page ${pageNum}. Ending new page crawl.`);
     return false; // No threads means likely end of new pages or structure changed
   }
 
@@ -148,7 +150,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
     const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
 
     if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
-      console.log(`Processing new or updated thread: ${threadUrl}`);
+      logger.info(`Processing new or updated thread: ${threadUrl}`);
       processingPromises.push(
         (async () => {
           const processedData = await processThread(threadUrl);
@@ -170,7 +172,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
         processingPromises.length = 0; // Clear the array
       }
     } else {
-      console.log(`Thread ${threadUrl} recently processed. Skipping.`);
+      logger.info(`Thread ${threadUrl} recently processed. Skipping.`);
     }
   }
 
@@ -245,7 +247,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       threadUrl: originalUrl // Store the original thread URL for debugging/reference
     });
 
-    console.log(`Saved episode data for ${episodeKey}`);
+    logger.debug(`Saved episode data for ${episodeKey}`);
   }
 
   // Update languages for the show hash if new languages are found
@@ -267,7 +269,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
  * Periodically crawls new forum pages to discover new content.
  */
 async function crawlNewPages(): Promise<void> {
-  console.log('Starting new page crawl...');
+  logger.info('Starting new page crawl...');
   let hasMorePages = true;
   let pageCounter = 1;
 
@@ -279,10 +281,10 @@ async function crawlNewPages(): Promise<void> {
     } else {
       // If a page yields no new threads or an error, stop crawling newer pages.
       // Reset currentPage for the next run if it's the end of content.
-      console.log(`Ended new page crawl at page ${pageCounter}.`);
+      logger.info(`Ended new page crawl at page ${pageCounter}.`);
     }
   }
-  console.log('New page crawl finished.');
+  logger.info('New page crawl finished.');
 }
 
 /**
@@ -290,7 +292,7 @@ async function crawlNewPages(): Promise<void> {
  * This function will fetch threads that were last updated X hours ago.
  */
 async function revisitExistingThreads(): Promise<void> {
-  console.log('Starting existing thread revisit...');
+  logger.info('Starting existing thread revisit...');
   // Get all thread keys
   const threadKeys = await redisClient.keys('thread:*');
 
@@ -337,7 +339,7 @@ async function revisitExistingThreads(): Promise<void> {
     }
   }
   await Promise.all(processingPromises);
-  console.log(`Revisited ${threadsToRevisit.length} existing threads.`);
+  logger.info(`Revisited ${threadsToRevisit.length} existing threads.`);
 }
 
 /**
@@ -346,11 +348,11 @@ async function revisitExistingThreads(): Promise<void> {
  */
 export function startCrawler(): void {
   if (isCrawling) {
-    console.log('Crawler is already running.');
+    logger.info('Crawler is already running.');
     return;
   }
   isCrawling = true;
-  console.log('Stremio Addon Crawler started.');
+  logger.info('Stremio Addon Crawler started.');
 
   // Initial crawl on startup
   (async () => {
@@ -360,13 +362,13 @@ export function startCrawler(): void {
 
   // Schedule new page crawls
   setInterval(async () => {
-    console.log('Scheduled crawl for new pages triggered.');
+    logger.info('Scheduled crawl for new pages triggered.');
     await crawlNewPages();
   }, config.CRAWL_INTERVAL * 1000); // Convert seconds to milliseconds
 
   // Schedule existing thread revisits
   setInterval(async () => {
-    console.log('Scheduled revisit for existing threads triggered.');
+    logger.info('Scheduled revisit for existing threads triggered.');
     await revisitExistingThreads();
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000); // Convert hours to milliseconds
 }
