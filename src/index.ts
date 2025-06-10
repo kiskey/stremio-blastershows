@@ -85,8 +85,8 @@ app.get('/debug/crawled-data', async (req, res) => {
   logger.info('Received request for crawled data debug endpoint.');
   try {
     const allThreadKeys = await redisClient.keys('thread:*');
-    const allMovieKeys = await redisClient.keys('show:*'); // Keys are now show:<threadId>
-    const allEpisodeKeys = await redisClient.keys('episode:*'); // Keys are episode:<stremioMovieId>:s<S>e<E>:<res>
+    const allMovieKeys = await redisClient.keys('movie:*'); // Keys are now movie:<stremioMovieId>
+    const allEpisodeKeys = await redisClient.keys('episode:*'); // Keys are episode:<stremioMovieId>:s<S>e<E>:<res>:<idx>
 
     const crawledThreads: { [key: string]: any } = {};
     for (const key of allThreadKeys) {
@@ -102,7 +102,8 @@ app.get('/debug/crawled-data', async (req, res) => {
           originalTitle: data.originalTitle,
           posterUrl: data.posterUrl,
           lastUpdated: data.lastUpdated,
-          threadId: key.replace('show:', '') // Link back to the original threadId
+          // Link back to the original threadId if available, though it might be one of many now
+          associatedThreadId: data.associatedThreadId
         };
       }
     }
@@ -110,13 +111,13 @@ app.get('/debug/crawled-data', async (req, res) => {
     const crawledEpisodes: { [stremioMovieId: string]: { [episodeKey: string]: any } } = {};
     for (const key of allEpisodeKeys) {
       const data = await hgetall(key);
-      if (data.stremioMovieId && data.magnet && data.magnet.startsWith('magnet:?xt=urn:btih:')) {
+      if (data.stremioMovieId && data.magnet) { // Check for stremioMovieId and magnet existence
         if (!crawledEpisodes[data.stremioMovieId]) {
           crawledEpisodes[data.stremioMovieId] = {};
         }
         crawledEpisodes[data.stremioMovieId][key] = {
           title: data.title,
-          magnet: data.magnet,
+          magnet: data.magnet.startsWith('magnet:?xt=urn:btih:') ? data.magnet : 'INVALID MAGNET LINK', // Validate magnet link
           size: data.size,
           threadUrl: data.threadUrl
         };
@@ -126,7 +127,7 @@ app.get('/debug/crawled-data', async (req, res) => {
         }
         crawledEpisodes[data.stremioMovieId][key] = {
             title: data.title,
-            magnet: 'N/A (invalid or missing)',
+            magnet: 'N/A (missing or invalid)',
             size: data.size,
             threadUrl: data.threadUrl
         };
