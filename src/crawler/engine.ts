@@ -95,11 +95,11 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
  * Discovers thread URLs from a forum page.
  * @param html The HTML content of the forum page.
  * @param baseUrl The base URL to resolve relative links.
- * @returns An array of discovered thread URLs.
+ * @returns An array of discovered unique thread URLs relevant for processing.
  */
 function discoverThreadUrls(html: string, baseUrl: string): string[] {
   const $ = cheerio.load(html);
-  const threadUrls: string[] = [];
+  const uniqueThreadUrls = new Set<string>(); // Use a Set to ensure uniqueness
 
   // Parse <a class="" data-ipshover> elements as specified in requirements.
   $('a[data-ipshover]').each((index, element) => {
@@ -109,13 +109,13 @@ function discoverThreadUrls(html: string, baseUrl: string): string[] {
       // Filter out unwanted URLs: only keep those containing "/forums/topic/"
       // and explicitly ignore those containing "/profile/"
       if (absoluteUrl.includes('/forums/topic/') && !absoluteUrl.includes('/profile/')) {
-        threadUrls.push(absoluteUrl);
+        uniqueThreadUrls.add(absoluteUrl); // Add to Set
       } else {
         logger.debug(`Ignoring URL: ${absoluteUrl} (not a topic or is a profile page)`);
       }
     }
   });
-  return threadUrls;
+  return Array.from(uniqueThreadUrls); // Convert Set back to Array
 }
 
 /**
@@ -153,6 +153,8 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
     const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000; // hours to ms
     const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
 
+    // The logic here is correct: if not processed before, or if enough time has passed, process it.
+    // The "skipping" logs come from threads that WERE processed in the *same batch* and thus had their timestamp updated in Redis.
     if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
       logger.info(`Processing new or updated thread: ${threadUrl}`);
       processingPromises.push(
