@@ -1,5 +1,5 @@
 # Stage 1: Build the TypeScript application
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder # Changed from node:18-alpine to node:20-alpine
 
 WORKDIR /app
 
@@ -7,6 +7,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Update npm to the latest version to avoid potential resolution issues
+# This step should now work with Node.js 20
 RUN npm install -g npm@latest
 
 # Install production dependencies first to leverage Docker layer caching
@@ -21,7 +22,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Create the thin production image
-FROM node:18-alpine
+FROM node:20-alpine # Changed from node:18-alpine to node:20-alpine
 
 WORKDIR /app
 
