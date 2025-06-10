@@ -35,11 +35,12 @@ export async function hget(key: string, field: string): Promise<string | null> {
  * @param key The key of the hash.
  * @param field The field within the hash.
  * @param value The value to set.
- * @returns The number of fields that were added/updated.
+ * @returns The number of fields that were added/updated (1 or 0).
  */
 export async function hset(key: string, field: string, value: string): Promise<number> {
   try {
-    return await redisClient.hset(key, field, value) as number; // Explicitly cast to number
+    // ioredis.hset correctly returns 1 (new field) or 0 (updated field) as a number
+    return await redisClient.hset(key, field, value);
   } catch (error) {
     console.error(`Error HSET key: ${key}, field: ${field}`, error);
     return 0; // Return 0 on error
@@ -50,12 +51,14 @@ export async function hset(key: string, field: string, value: string): Promise<n
  * Function to set multiple fields in a Redis Hash.
  * @param key The key of the hash.
  * @param data An object containing field-value pairs.
- * @returns The number of fields that were added.
+ * @returns 1 if the operation was successful, 0 on error.
  */
 export async function hmset(key: string, data: Record<string, string>): Promise<number> {
   try {
-    // HMSET in ioredis accepts an array of key-value pairs or an object directly
-    return await redisClient.hmset(key, data) as number; // Explicitly cast to number
+    // HMSET in ioredis returns the string "OK" upon success.
+    // We await the operation and then return a numeric indicator of success.
+    const result = await redisClient.hmset(key, data);
+    return result === 'OK' ? 1 : 0; // Return 1 for success, 0 otherwise
   } catch (error) {
     console.error(`Error HMSET key: ${key}, data:`, data, error);
     return 0; // Return 0 on error
@@ -130,7 +133,7 @@ export async function del(key: string): Promise<number> {
 export async function purgeRedis(): Promise<void> {
   try {
     console.warn('Purging all data from Redis database...');
-    await redisClient.flushdb(); // Perform the action
+    await redisClient.flushdb(); // Perform the action, it returns "OK" as a string, but we discard it for void return
     console.log('Redis database purged successfully.');
   } catch (error) {
     console.error('Error purging Redis database:', error);
