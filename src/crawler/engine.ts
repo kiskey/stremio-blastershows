@@ -162,7 +162,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
         (async () => {
           const processedData = await processThread(threadUrl);
           if (processedData) {
-            // Store processed data in Redis (show, season, episode, thread hashes)
+            // Store processed data in Redis (movie, episode, thread hashes)
             await saveThreadData(processedData);
             // Update thread tracking hash
             await hmset(`thread:${threadId}`, {
@@ -198,19 +198,23 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   const now = new Date();
 
-  // Basic normalization for show title for the stremioId
+  // Basic normalization for show title to create a consistent Stremio ID
   const normalizedTitle = normalizeTitle(title);
-  // Stremio ID for the "movie" will be tt<normalizedTitle>
-  const stremioMovieId = `tt${normalizedTitle}`;
+  const stremioMovieId = `tt${normalizedTitle}`; // Consistent ID for the logical movie
 
-  // Store show details using threadId as the primary key for uniqueness.
-  // This ensures each unique thread maps to a unique show entry in Redis.
-  await hmset(`show:${threadId}`, { // Key changed to show:<threadId>
+  // Store main movie details using the stremioMovieId as the primary key.
+  // This ensures each unique movie title has a single entry in the catalog.
+  const movieKey = `movie:${stremioMovieId}`;
+  await hmset(movieKey, {
     originalTitle: title,
     posterUrl: posterUrl,
     stremioId: stremioMovieId, // Store the consistent Stremio ID within the hash
-    lastUpdated: now.toISOString()
+    lastUpdated: now.toISOString(),
+    // We can also store the threadId associated with this movie for debugging/lookup
+    associatedThreadId: threadId
   });
+  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId})`);
+
 
   // Using the title parser to get more structured data (season, episode, etc.)
   const { season, episodeStart, episodeEnd, languages, resolution, qualityTags } = await (async () => {
@@ -228,16 +232,17 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
 
   for (let i = 0; i < episodeCount; i++) {
     const currentEpisodeNum = (episodeStart || 1) + i;
-    // Episode keys now link to the stremioMovieId and include season/episode/resolution
-    // This forms a unique key for each specific quality/episode stream
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${resolution || 'unknown'}:${i}`; // Added :${i} to make keys unique if multiple magnets for same S/E/Res
+    // Episode keys are now constructed to link to the stremioMovieId and include S/E/Res.
+    // Adding `:${i}` at the end ensures unique keys if a single thread has multiple magnets
+    // for the *same* season/episode/resolution combination.
+    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${resolution || 'unknown'}:${i}`;
 
     const magnet = magnets[i]?.url || magnets[0]?.url || ''; // Take specific magnet if multiple, fallback to first
     const magnetName = magnets[i]?.name || magnets[0]?.name || '';
     const magnetSize = magnets[i]?.size || magnets[0]?.size || '';
 
-    // Store individual episode/quality data
-    if (magnet) { // Only store if there's a valid magnet
+    // Store individual episode/quality data if a valid magnet exists
+    if (magnet) {
       await hmset(episodeKey, {
         magnet: magnet,
         name: magnetName,
@@ -247,25 +252,25 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
         threadUrl: originalUrl, // Store the original thread URL for debugging/reference
         stremioMovieId: stremioMovieId // Link back to the main movie ID
       });
-      logger.debug(`Saved episode data for ${episodeKey}`);
+      logger.info(`Saved episode data for ${episodeKey} (Magnet: ${magnet.substring(0, 30)}...)`);
     } else {
       logger.warn(`Skipping saving episode data for ${episodeKey} due to missing magnet.`);
     }
   }
 
-  // Update languages for the show hash (movie) if new languages are found
+  // Update languages for the movie hash if new languages are found
   if (languages && languages.length > 0) {
-    const existingLanguagesString = await hgetall(`show:${threadId}`).then(data => data.languages); // Check the show:<threadId> key
+    const existingLanguagesString = await hgetall(movieKey).then(data => data.languages);
     const existingLanguages = existingLanguagesString ? existingLanguagesString.split(',') : [];
     const mergedLanguages = Array.from(new Set([...existingLanguages, ...languages]));
-    await hset(`show:${threadId}`, 'languages', mergedLanguages.join(','));
+    await hset(movieKey, 'languages', mergedLanguages.join(','));
   }
 
-  // Update seasons field in show hash (movie) to record discovered seasons
-  const existingSeasonsString = await hgetall(`show:${threadId}`).then(data => data.seasons); // Check the show:<threadId> key
+  // Update seasons field in movie hash to record discovered seasons
+  const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
   const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
   const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-  await hset(`show:${threadId}`, 'seasons', mergedSeasons.join(','));
+  await hset(movieKey, 'seasons', mergedSeasons.join(','));
 }
 
 /**
