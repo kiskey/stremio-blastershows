@@ -246,18 +246,19 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
-  const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
+  // Destructure relevant fields, and rename threadStartedTime to avoid direct conflict
+  const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
   
-  // Explicitly ensure threadStartedTime is a string, providing a fallback.
-  // This is the most robust type guard for the compiler in this scenario.
-  let confirmedThreadStartedTime: string;
-  if (typeof data.threadStartedTime === 'string') {
-    confirmedThreadStartedTime = data.threadStartedTime;
+  // Explicitly define a string variable and assign the value with a robust type guard.
+  // This will ensure 'finalThreadStartedTime' is always of type 'string' at compile time.
+  let finalThreadStartedTime: string;
+  if (typeof initialThreadStartedTime === 'string') {
+    finalThreadStartedTime = initialThreadStartedTime;
   } else {
-    // This else block should theoretically not be reached if processThread is working correctly
-    // but it provides a compile-time guarantee and a runtime fallback.
+    // This else block is a fallback for extremely unlikely scenarios or compiler quirks,
+    // ensuring a string value is always provided.
     logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${threadId}. Using current timestamp as fallback.`);
-    confirmedThreadStartedTime = new Date().toISOString(); 
+    finalThreadStartedTime = new Date().toISOString(); 
   }
   
   const now = new Date();
@@ -275,9 +276,9 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     stremioId: stremioMovieId, // Store the consistent Stremio ID within the hash
     lastUpdated: now.toISOString(),
     associatedThreadId: threadId, // Link back to the original threadId
-    threadStartedTime: confirmedThreadStartedTime // Use the explicitly confirmed string
+    threadStartedTime: finalThreadStartedTime // Use the explicitly confirmed string variable
   });
-  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${confirmedThreadStartedTime})`);
+  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${finalThreadStartedTime})`);
 
 
   // Using the title parser to get more structured data (season, episode, etc.) from overall title
