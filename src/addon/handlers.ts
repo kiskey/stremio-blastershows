@@ -30,17 +30,17 @@ export async function getCatalog(
     return { metas: [] }; // Return empty if catalog ID doesn't match
   }
 
-  // Fetch all show keys from Redis. Now, these keys are based on threadId: show:<threadId>
-  const showKeys = await redisClient.keys('show:*');
+  // Fetch all movie keys from Redis. These keys are now based on stremioMovieId: movie:<stremioMovieId>
+  const movieKeys = await redisClient.keys('movie:*');
   let allMovies: DiscoverableItem[] = [];
 
-  for (const key of showKeys) {
-    const showData = await hgetall(key); // Fetch data for show:<threadId>
-    if (Object.keys(showData).length > 0 && showData.stremioId && showData.originalTitle) {
+  for (const key of movieKeys) {
+    const movieData = await hgetall(key); // Fetch data for movie:<stremioMovieId>
+    if (Object.keys(movieData).length > 0 && movieData.stremioId && movieData.originalTitle) {
       // Use the stored stremioId and originalTitle
-      const stremioId = showData.stremioId;
-      const originalTitle = showData.originalTitle;
-      const posterUrl = showData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(originalTitle || 'No Poster')}`;
+      const stremioId = movieData.stremioId;
+      const originalTitle = movieData.originalTitle;
+      const posterUrl = movieData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(originalTitle || 'No Poster')}`;
       allMovies.push({
         id: stremioId,
         name: originalTitle,
@@ -90,18 +90,10 @@ export async function getMeta(type: string, id: string): Promise<MetaResponse> {
     return { meta: null };
   }
 
-  // Find the actual show data by iterating through all show keys and matching the stremioId
-  let foundShowData: Record<string, string> = {};
-  const allShowKeys = await redisClient.keys('show:*'); // Get all show:<threadId> keys
-  for (const key of allShowKeys) {
-    const data = await hgetall(key);
-    if (data.stremioId === id) { // Match against the full Stremio ID (e.g., ttnormalizedtitle)
-      foundShowData = data;
-      break;
-    }
-  }
+  // Directly fetch movie data using the Stremio ID as the Redis key
+  const movieData = await hgetall(`movie:${id}`); // Key is movie:<stremioMovieId>
 
-  if (Object.keys(foundShowData).length === 0) {
+  if (Object.keys(movieData).length === 0) {
     logger.info(`Movie with Stremio ID ${id} not found in Redis.`);
     return { meta: null };
   }
@@ -109,11 +101,11 @@ export async function getMeta(type: string, id: string): Promise<MetaResponse> {
   // Construct the meta object for the 'movie'.
   const meta = {
     id: id,
-    name: foundShowData.originalTitle || 'Unknown Title',
+    name: movieData.originalTitle || 'Unknown Title',
     type: 'movie' as const, // Explicitly cast to 'movie' literal type
-    poster: foundShowData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(foundShowData.originalTitle || 'No Poster')}`,
-    description: foundShowData.description || 'No description available.',
-    background: foundShowData.posterUrl,
+    poster: movieData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(movieData.originalTitle || 'No Poster')}`,
+    description: movieData.description || 'No description available.',
+    background: movieData.posterUrl,
     // Do NOT include 'videos' array here as per Stremio's 'movie' type convention
     // and the request to list all episodes/qualities under the 'stream' endpoint.
   };
@@ -147,20 +139,16 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
   const allStreams: Stream[] = [];
 
   // Find all episode keys associated with this stremioMovieId
-  // The pattern should match: episode:tt<normalizedTitle>:s<season>e<episode>:<resolutionTag>
+  // The pattern should match: episode:<stremioMovieId>:s<S>e<E>:<resolutionTag>:<index>
   const episodeKeys = await redisClient.keys(`episode:${id}:*`); // Use the full 'id' (stremioMovieId) for consistency
 
   logger.debug(`Found ${episodeKeys.length} episode keys for movie ID ${id}.`);
 
-  // Get the original show title for better stream titles
+  // Get the original show title from the main movie data for better stream titles
   let originalShowTitle = 'Unknown Title';
-  const allShowKeys = await redisClient.keys('show:*');
-  for (const key of allShowKeys) {
-      const data = await hgetall(key);
-      if (data.stremioId === id) {
-          originalShowTitle = data.originalTitle || originalShowTitle;
-          break;
-      }
+  const movieData = await hgetall(`movie:${id}`); // Fetch directly using the Stremio ID
+  if (movieData && movieData.originalTitle) {
+      originalShowTitle = movieData.originalTitle;
   }
 
 
@@ -170,8 +158,9 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
       // Extract season, episode, and resolution from the episodeKey for stream title
       // Example key: episode:ttmovietitle:s1e1:720p:0
       const keyParts = episodeKey.split(':');
-      const seasonEpisodePart = keyParts[3]; // e.g., s1e1
-      const resolutionPart = keyParts[4]; // e.g., 720p
+      // keyParts will be: [0: "episode", 1: "ttmovietitle", 2: "s1e1", 3: "720p", 4: "0"]
+      const seasonEpisodePart = keyParts[2]; // e.g., s1e1
+      const resolutionPart = keyParts[3]; // e.g., 720p
 
       const seasonMatch = seasonEpisodePart.match(/s(\d+)/i);
       const episodeMatch = seasonEpisodePart.match(/e(\d+)/i);
