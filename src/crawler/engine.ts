@@ -76,7 +76,7 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
     logger.error(`Error fetching ${url}:`, error);
     if (retries > 0) {
       const delay = Math.pow(2, (3 - retries)) * 1000; // Exponential backoff
-      logger.info(`Retrying ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
+      logger.info(`Retrying ${url} in ${delay / 1000} seconds... (${retries} left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchHtml(url, retries - 1);
     }
@@ -247,9 +247,9 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
-  // Use non-null assertion for threadStartedTime to satisfy TypeScript,
-  // as it's guaranteed to be a string by the processing logic.
-  const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime } = data;
+  const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
+  // Explicitly ensure threadStartedTime is a string, providing a fallback.
+  const confirmedThreadStartedTime: string = data.threadStartedTime || new Date().toISOString();
   const now = new Date();
 
   // Basic normalization for show title to create a consistent Stremio ID
@@ -265,9 +265,9 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     stremioId: stremioMovieId, // Store the consistent Stremio ID within the hash
     lastUpdated: now.toISOString(),
     associatedThreadId: threadId, // Link back to the original threadId
-    threadStartedTime: threadStartedTime ?? new Date().toISOString() // Robustly ensure string type
+    threadStartedTime: confirmedThreadStartedTime // Use the explicitly confirmed string
   });
-  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${threadStartedTime})`);
+  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${confirmedThreadStartedTime})`);
 
 
   // Using the title parser to get more structured data (season, episode, etc.) from overall title
