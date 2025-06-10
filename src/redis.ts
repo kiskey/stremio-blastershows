@@ -129,8 +129,9 @@ export async function del(key: string): Promise<number> {
 export async function purgeRedis(): Promise<string> {
   try {
     console.warn('Purging all data from Redis database...');
-    // flushdb returns 'OK' as a string, so the Promise<string> is correct.
-    return await redisClient.flushdb();
+    // Explicitly return 'OK' string to bypass any potential type inference issues
+    await redisClient.flushdb(); // Perform the action
+    return 'OK'; // Return the expected string literal type
   } catch (error) {
     console.error('Error purging Redis database:', error);
     return 'error';
