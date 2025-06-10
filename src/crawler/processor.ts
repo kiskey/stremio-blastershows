@@ -1,9 +1,9 @@
 import axios from 'axios';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio'; // Changed import for Cheerio
 import { ThreadContent, MagnetData } from './engine'; // Import interfaces
 import { sanitize } from 'dompurify'; // For HTML sanitization
 // Using js-levenshtein for Jaro-Winkler, as specified in requirements.
-import jaroWinkler from 'js-levenshtein';
+import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
 import { logger } from '../utils/logger'; // Import the centralized logger
 
