@@ -1,9 +1,9 @@
 import axios from 'axios';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio'; // Changed import for Cheerio
 import { config } from '../config';
 import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
 import { processThread } from './processor';
-import { logger } from '../utils/logger'; // Import the centralized logger
+import { logger } from '../utils/logger';
 
 /**
  * Interface for MagnetData as specified in requirements.
@@ -98,6 +98,7 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
  * @returns An array of discovered thread URLs.
  */
 function discoverThreadUrls(html: string, baseUrl: string): string[] {
+  // Assuming html is not null here, as crawlForumPage should handle it.
   const $ = cheerio.load(html);
   const threadUrls: string[] = [];
 
@@ -125,7 +126,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
   const html = await fetchHtml(url);
   if (!html) {
     logger.warn(`Could not fetch HTML for page ${pageNum}. Assuming end of pagination.`);
-    return false; // Indicates end of pagination or critical error
+    return false; // Indicates end of pagination or critical error, stop crawling this page
   }
 
   const threadUrls = discoverThreadUrls(html, url);
@@ -136,7 +137,6 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
     return false; // No threads means likely end of new pages or structure changed
   }
 
-  const newThreadsCount = 0;
   // Use a worker thread pool for parallel processing if MAX_CONCURRENCY > 1
   const processingPromises: Promise<void>[] = [];
   for (const threadUrl of threadUrls) {
@@ -179,7 +179,8 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
   // Await any remaining processing promises
   await Promise.all(processingPromises);
 
-  return newThreadsCount > 0 || threadUrls.length > 0;
+  // Return true if any threads were discovered, even if not new
+  return threadUrls.length > 0;
 }
 
 /**
@@ -201,13 +202,6 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     stremioId: `tt${normalizedTitle}`, // Example Stremio ID linking to normalized title
     lastUpdated: now.toISOString()
   });
-
-  // Store season and episode information
-  // This part needs to be more sophisticated, integrating with the title parser
-  // to extract season and episode numbers. For now, assuming a simple structure.
-  // The actual requirements specify `season:{showId}:{seasonNum} - Sorted Set`
-  // and `episode:{seasonKey}:{epNum} - Hash`.
-  // We'll simulate this by adding a placeholder season/episode.
 
   // Using the title parser to get more structured data
   const { season, episodeStart, episodeEnd, languages, resolution, qualityTags } = await (async () => {
