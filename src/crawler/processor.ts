@@ -58,6 +58,30 @@ function validateMagnetUri(uri: string): boolean {
 }
 
 /**
+ * Extracts a unique numerical thread ID from a forum topic URL.
+ * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
+ * @param threadUrl The URL of the forum thread.
+ * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
+ */
+function getUniqueThreadId(threadUrl: string): string {
+  const url = new URL(threadUrl);
+  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
+  const pathSegments = url.pathname.split('/');
+  // Find the segment that starts with a number and contains a hyphen
+  // e.g., "133067-mercy-for-none-s01-..."
+  const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
+
+  if (topicSegment) {
+    return topicSegment.split('-')[0]; // Extract just the number
+  } else {
+    // Fallback if the numerical ID pattern is not found
+    logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
+    return Buffer.from(threadUrl).toString('base64');
+  }
+}
+
+
+/**
  * Processes a single forum thread page to extract relevant content.
  * @param threadUrl The URL of the forum thread page.
  * @returns A Promise resolving to ThreadContent object or null if processing fails.
@@ -146,17 +170,15 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     timestamp = new Date().toISOString();
   }
 
-  // Generate a simple thread ID. A more robust ID might be needed for actual forum structure.
-  // Using the last part of the URL path as a simple ID, assuming it's unique enough.
-  const threadId = new URL(threadUrl).pathname.split('/').pop()?.split('-')[0] || Buffer.from(threadUrl).toString('base64');
-
+  // Generate a unique thread ID using the robust function
+  const threadId = getUniqueThreadId(threadUrl);
 
   const processedContent: ThreadContent = {
     title: title,
     posterUrl: posterUrl,
     magnets: magnets,
     timestamp: timestamp,
-    threadId: threadId,
+    threadId: threadId, // Ensure the correct unique ID is passed
     originalUrl: threadUrl
   };
 
