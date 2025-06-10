@@ -120,7 +120,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     }
   }
   // Sanitize title to prevent XSS
-  title = purify.sanitize(title, { USE_PROFILES: { html: false } }); // Corrected usage for DOMPurify
+  title = purify.sanitize(title, { USE_PROFILES: { html: false } });
 
 
   // Extract posterUrl: <img class="ipsImage"> src attribute (first image in the post content)
@@ -160,6 +160,16 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     }
   });
 
+  // Extract threadStartedTime: from <time datetime="ISO8601"> within <span class="ipsType_light">
+  const threadStartedTimeElement = $('span.ipsType_light time').first();
+  let threadStartedTime = threadStartedTimeElement.attr('datetime') || new Date().toISOString();
+
+  if (!threadStartedTime || isNaN(new Date(threadStartedTime).getTime())) {
+    logger.warn(`Could not parse valid thread started time for ${threadUrl}. Using current time.`);
+    threadStartedTime = new Date().toISOString();
+  }
+
+
   // Extract timestamp: Last modified time
   // This often requires specific parsing of a timestamp element, e.g., <time datetime="ISO8601">
   const timestampElement = $('time.ipsType_reset').first(); // Common timestamp element
@@ -179,7 +189,8 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     magnets: magnets,
     timestamp: timestamp,
     threadId: threadId, // Ensure the correct unique ID is passed
-    originalUrl: threadUrl
+    originalUrl: threadUrl,
+    threadStartedTime: threadStartedTime // Added threadStartedTime
   };
 
   logger.info(`Processed thread ${threadUrl}: Title="${processedContent.title}", Magnets: ${processedContent.magnets.length}`);
