@@ -1,6 +1,6 @@
-// Corrected import strategy for js-levenshtein to address TS2497 and TS2339
-// Importing the default export and then accessing the named function from it.
-import JaroLevenshtein from 'js-levenshtein';
+// Removed previous import statement for 'js-levenshtein'
+// The declaration in src/js-levenshtein.d.ts will now provide the types.
+import { jaroWinkler } from 'js-levenshtein'; // This will now correctly pull from the .d.ts file
 
 import { logger } from '../utils/logger'; // Import the centralized logger
 
@@ -158,7 +158,7 @@ export function fuzzyMatch(title1: string, title2: string, threshold: number = 0
 
   // jaroWinkler(a, b) returns the distance (0 for identical, 1 for completely different).
   // We need similarity, so 1 - distance.
-  const similarity = 1 - JaroLevenshtein.jaroWinkler(normalized1, normalized2); // Access jaroWinkler from the default import
+  const similarity = 1 - jaroWinkler(normalized1, normalized2); // Use the imported jaroWinkler
 
   logger.debug(`Fuzzy matching "${title1}" vs "${title2}": Normalized "${normalized1}" vs "${normalized2}"`);
   logger.debug(`Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
