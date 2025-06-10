@@ -5,6 +5,17 @@ import path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 /**
+ * Log levels for controlling logging verbosity.
+ */
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+  OFF = 4, // Turn off all logging
+}
+
+/**
  * Interface for application configuration settings.
  */
 export interface AppConfig {
@@ -20,6 +31,7 @@ export interface AppConfig {
   ADDON_ID: string;
   ADDON_NAME: string;
   ADDON_DESCRIPTION: string;
+  LOG_LEVEL: LogLevel; // New logging level configuration
 }
 
 /**
@@ -38,7 +50,8 @@ export const config: AppConfig = {
   DOMAIN_MONITOR: process.env.DOMAIN_MONITOR || 'http://1tamilblasters.net',
   ADDON_ID: 'community.tamilshows-addon',
   ADDON_NAME: 'TamilShows Web Series',
-  ADDON_DESCRIPTION: 'Auto-updating Tamil web series catalog'
+  ADDON_DESCRIPTION: 'Auto-updating Tamil web series catalog',
+  LOG_LEVEL: LogLevel[process.env.LOG_LEVEL?.toUpperCase() as keyof typeof LogLevel] || LogLevel.INFO, // Default to INFO
 };
 
 // Log the configuration to ensure it's loaded correctly (for debugging)
