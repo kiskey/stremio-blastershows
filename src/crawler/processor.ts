@@ -2,6 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio'; // Changed import for Cheerio
 import { ThreadContent, MagnetData } from './engine'; // Import interfaces
 import DOMPurify from 'dompurify'; // Changed import for DOMPurify
+import { JSDOM } from 'jsdom'; // Import JSDOM for DOMPurify initialization
 // Using js-levenshtein for Jaro-Winkler, as specified in requirements.
 import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
@@ -69,6 +70,10 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
 
   const $ = cheerio.load(html);
 
+  // Initialize DOMPurify with a JSDOM window for Node.js environment
+  const window = new JSDOM('').window;
+  const purify = DOMPurify(window);
+
   // Extract title: <span class="ipsType_break ipsContained"> text
   // Using .first() to ensure we get the first match in case of multiple
   const titleElement = $('span.ipsType_break.ipsContained').first();
@@ -88,8 +93,8 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
       return null;
     }
   }
-  // Sanitize title to prevent XSS (although DOMPurify is more for HTML, basic string sanitization)
-  title = DOMPurify.sanitize(title, { USE_PROFILES: { html: false } }); // Changed usage for DOMPurify
+  // Sanitize title to prevent XSS
+  title = purify.sanitize(title, { USE_PROFILES: { html: false } }); // Corrected usage for DOMPurify
 
 
   // Extract posterUrl: <img class="ipsImage"> src attribute (first image in the post content)
