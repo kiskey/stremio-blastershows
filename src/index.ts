@@ -102,7 +102,7 @@ app.get('/debug/crawled-data', async (req, res) => {
           originalTitle: data.originalTitle,
           posterUrl: data.posterUrl,
           lastUpdated: data.lastUpdated,
-          // Link back to the original threadId if available, though it might be one of many now
+          threadStartedTime: data.threadStartedTime, // Include threadStartedTime
           associatedThreadId: data.associatedThreadId
         };
       }
@@ -119,6 +119,7 @@ app.get('/debug/crawled-data', async (req, res) => {
           title: data.title,
           magnet: data.magnet.startsWith('magnet:?xt=urn:btih:') ? data.magnet : 'INVALID MAGNET LINK', // Validate magnet link
           size: data.size,
+          resolution: data.resolution, // Include resolution
           threadUrl: data.threadUrl
         };
       } else if (data.stremioMovieId) {
@@ -129,6 +130,7 @@ app.get('/debug/crawled-data', async (req, res) => {
             title: data.title,
             magnet: 'N/A (missing or invalid)',
             size: data.size,
+            resolution: data.resolution, // Include resolution
             threadUrl: data.threadUrl
         };
       }
