@@ -3,18 +3,18 @@ name: Docker Image CI/CD
 on:
   push:
     branches:
-      - main # Trigger on pushes to the main branch
+      - main 
   pull_request:
     branches:
-      - main # Trigger on pull requests to the main branch
+      - main 
 
 jobs:
   build_and_push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write # Required for pushing to GitHub Packages
-      id-token: write # Required for OIDC authentication with registries
+      packages: write 
+      id-token: write 
 
     steps:
     - name: Checkout repository
