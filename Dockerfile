@@ -5,6 +5,10 @@ WORKDIR /app
 
 # Copy package.json and package-lock.json (or yarn.lock) to install dependencies
 COPY package*.json ./
+
+# Update npm to the latest version to avoid potential resolution issues
+RUN npm install -g npm@latest
+
 # Install production dependencies first to leverage Docker layer caching
 RUN npm install --only=production
 # Install dev dependencies for building
@@ -20,6 +24,9 @@ RUN npm run build
 FROM node:18-alpine
 
 WORKDIR /app
+
+# Update npm in the final stage as well for consistency, though less critical
+RUN npm install -g npm@latest
 
 # Copy only the necessary files from the builder stage
 # Copy package.json to install only production dependencies in the final image
