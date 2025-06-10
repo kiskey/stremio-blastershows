@@ -1,0 +1,33 @@
+{
+  "id": "community.tamilshows-addon",
+  "version": "1.0.0",
+  "name": "TamilShows Web Series",
+  "description": "An auto-updating Stremio addon for Tamil web series and TV shows, featuring intelligent title parsing, fuzzy matching, and efficient content updates.",
+  "resources": [
+    "catalog",
+    "meta",
+    "stream",
+    "search"
+  ],
+  "types": [
+    "series"
+  ],
+  "catalogs": [
+    {
+      "type": "series",
+      "id": "tamil-web-series",
+      "name": "Tamil Web Series",
+      "extra": [
+        { "name": "search", "isRequired": false },
+        { "name": "skip", "isRequired": false }
+      ]
+    }
+  ],
+  "idPrefixes": [
+    "tt"
+  ],
+  "behaviorHints": {
+    "configurable": false,
+    "adult": false
+  }
+}
