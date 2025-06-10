@@ -129,7 +129,7 @@ export async function del(key: string): Promise<number> {
 export async function purgeRedis(): Promise<string> {
   try {
     console.warn('Purging all data from Redis database...');
-    return await redisClient.flushdb();
+    return await redisClient.flushdb(); // Changed return type to string
   } catch (error) {
     console.error('Error purging Redis database:', error);
     return 'error';
