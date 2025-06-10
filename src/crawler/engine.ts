@@ -248,8 +248,9 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
-  // Use non-null assertion for threadStartedTime as it's guaranteed by processThread
-  const confirmedThreadStartedTime: string = data.threadStartedTime!; 
+  // Explicitly convert threadStartedTime to string using String() constructor.
+  // This guarantees a string primitive, even if data.threadStartedTime were theoretically undefined.
+  const confirmedThreadStartedTime: string = String(data.threadStartedTime); 
   const now = new Date();
 
   // Basic normalization for show title to create a consistent Stremio ID
