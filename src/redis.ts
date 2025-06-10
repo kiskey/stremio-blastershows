@@ -39,7 +39,7 @@ export async function hget(key: string, field: string): Promise<string | null> {
  */
 export async function hset(key: string, field: string, value: string): Promise<number> {
   try {
-    return await redisClient.hset(key, field, value);
+    return await redisClient.hset(key, field, value) as number; // Explicitly cast to number
   } catch (error) {
     console.error(`Error HSET key: ${key}, field: ${field}`, error);
     return 0; // Return 0 on error
@@ -55,7 +55,7 @@ export async function hset(key: string, field: string, value: string): Promise<n
 export async function hmset(key: string, data: Record<string, string>): Promise<number> {
   try {
     // HMSET in ioredis accepts an array of key-value pairs or an object directly
-    return await redisClient.hmset(key, data);
+    return await redisClient.hmset(key, data) as number; // Explicitly cast to number
   } catch (error) {
     console.error(`Error HMSET key: ${key}, data:`, data, error);
     return 0; // Return 0 on error
@@ -127,7 +127,7 @@ export async function del(key: string): Promise<number> {
  * Use with extreme caution.
  * @returns A Promise that resolves when the purge is complete.
  */
-export async function purgeRedis(): Promise<void> { // Corrected return type to Promise<void>
+export async function purgeRedis(): Promise<void> {
   try {
     console.warn('Purging all data from Redis database...');
     await redisClient.flushdb(); // Perform the action
