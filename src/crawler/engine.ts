@@ -247,8 +247,6 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
-  // Use non-null assertion for threadStartedTime to satisfy TypeScript,
-  // as it's guaranteed to be a string by the processing logic.
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime } = data;
   const now = new Date();
 
@@ -265,7 +263,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     stremioId: stremioMovieId, // Store the consistent Stremio ID within the hash
     lastUpdated: now.toISOString(),
     associatedThreadId: threadId, // Link back to the original threadId
-    threadStartedTime: threadStartedTime // Store the thread started time
+    threadStartedTime: threadStartedTime as string // Explicitly cast to string
   });
   logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${threadStartedTime})`);
 
