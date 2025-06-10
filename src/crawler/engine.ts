@@ -247,6 +247,8 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
+  // Use non-null assertion for threadStartedTime to satisfy TypeScript,
+  // as it's guaranteed to be a string by the processing logic.
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime } = data;
   const now = new Date();
 
