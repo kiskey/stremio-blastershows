@@ -1,4 +1,3 @@
-// Use 'import type' for type-only imports to avoid TS2709 errors
 import type { Manifest } from 'stremio-addon-sdk';
 import { config } from '../config';
 
@@ -20,13 +19,13 @@ export function getManifest(): Manifest {
       "search"
     ],
     types: [
-      "series"
+      "movie" // Changed from "series" to "movie"
     ],
     catalogs: [
       {
-        type: "series",
-        id: "tamil-web-series",
-        name: "Tamil Web Series",
+        type: "movie", // Changed from "series" to "movie"
+        id: "tamil-web-movies", // Changed catalog ID to reflect movie type
+        name: "Tamil Web Movies & Shows", // Updated name
         extra: [
           { name: "search", isRequired: false },
           { name: "skip", isRequired: false }
@@ -34,7 +33,7 @@ export function getManifest(): Manifest {
       }
     ],
     idPrefixes: [
-      "tt" // Common prefix for IMDb IDs, often used for series
+      "tt" // Common prefix for IMDb IDs, generic enough for unique titles
     ],
     behaviorHints: {
       configurable: false,
