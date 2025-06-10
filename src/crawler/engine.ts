@@ -98,7 +98,6 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
  * @returns An array of discovered thread URLs.
  */
 function discoverThreadUrls(html: string, baseUrl: string): string[] {
-  // Assuming html is not null here, as crawlForumPage should handle it.
   const $ = cheerio.load(html);
   const threadUrls: string[] = [];
 
@@ -106,9 +105,14 @@ function discoverThreadUrls(html: string, baseUrl: string): string[] {
   $('a[data-ipshover]').each((index, element) => {
     const href = $(element).attr('href');
     if (href) {
-      // Resolve relative URLs to absolute URLs
       const absoluteUrl = new URL(href, baseUrl).href;
-      threadUrls.push(absoluteUrl);
+      // Filter out unwanted URLs: only keep those containing "/forums/topic/"
+      // and explicitly ignore those containing "/profile/"
+      if (absoluteUrl.includes('/forums/topic/') && !absoluteUrl.includes('/profile/')) {
+        threadUrls.push(absoluteUrl);
+      } else {
+        logger.debug(`Ignoring URL: ${absoluteUrl} (not a topic or is a profile page)`);
+      }
     }
   });
   return threadUrls;
@@ -130,10 +134,10 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
   }
 
   const threadUrls = discoverThreadUrls(html, url);
-  logger.info(`Discovered ${threadUrls.length} threads on page ${pageNum}.`);
+  logger.info(`Discovered ${threadUrls.length} relevant threads on page ${pageNum}.`);
 
   if (threadUrls.length === 0) {
-    logger.info(`No new threads found on page ${pageNum}. Ending new page crawl.`);
+    logger.info(`No new relevant threads found on page ${pageNum}. Ending new page crawl.`);
     return false; // No threads means likely end of new pages or structure changed
   }
 
