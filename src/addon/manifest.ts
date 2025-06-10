@@ -1,5 +1,6 @@
+// Use 'import type' for type-only imports to avoid TS2709 errors
+import type { Manifest } from 'stremio-addon-sdk';
 import { config } from '../config';
-import { Manifest } from 'stremio-addon-sdk';
 
 /**
  * Returns the Stremio Addon Manifest.
