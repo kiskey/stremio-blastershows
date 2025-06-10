@@ -249,8 +249,9 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   
-  // Use a type assertion to tell TypeScript that data.threadStartedTime will always be a string here.
-  const confirmedThreadStartedTime: string = data.threadStartedTime as string; 
+  // Robustly ensure threadStartedTime is a string, even if compiler thinks it's undefined.
+  // We know from processThread that it will always be a string.
+  const confirmedThreadStartedTime: string = data.threadStartedTime || new Date().toISOString();
   
   const now = new Date();
 
@@ -342,7 +343,8 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
   const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
   const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
   const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-  await hset(movieKey, 'seasons', mergedLanguages.join(','));
+  // FIX: Use mergedSeasons here, not mergedLanguages
+  await hset(movieKey, 'seasons', mergedSeasons.join(','));
 }
 
 /**
@@ -398,7 +400,7 @@ async function revisitExistingThreads(): Promise<void> {
 
   // Process threads to revisit with concurrency
   const processingPromises: Promise<void>[] = [];
-  for (const threadUrl /*: string*/ of threadsToRevisit) { // Removed explicit type to allow `getUniqueThreadId` to return string
+  for (const threadUrl of threadsToRevisit) {
     processingPromises.push(
       (async () => {
         const processedData = await processThread(threadUrl);
