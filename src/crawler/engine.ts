@@ -248,9 +248,10 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
-  // Explicitly convert threadStartedTime to string using String() constructor.
-  // This guarantees a string primitive, even if data.threadStartedTime were theoretically undefined.
-  const confirmedThreadStartedTime: string = String(data.threadStartedTime); 
+  
+  // Use a type assertion to tell TypeScript that data.threadStartedTime will always be a string here.
+  const confirmedThreadStartedTime: string = data.threadStartedTime as string; 
+  
   const now = new Date();
 
   // Basic normalization for show title to create a consistent Stremio ID
@@ -341,7 +342,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
   const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
   const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
   const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-  await hset(movieKey, 'seasons', mergedSeasons.join(','));
+  await hset(movieKey, 'seasons', mergedLanguages.join(','));
 }
 
 /**
@@ -397,7 +398,7 @@ async function revisitExistingThreads(): Promise<void> {
 
   // Process threads to revisit with concurrency
   const processingPromises: Promise<void>[] = [];
-  for (const threadUrl of threadsToRevisit) {
+  for (const threadUrl /*: string*/ of threadsToRevisit) { // Removed explicit type to allow `getUniqueThreadId` to return string
     processingPromises.push(
       (async () => {
         const processedData = await processThread(threadUrl);
@@ -407,7 +408,7 @@ async function revisitExistingThreads(): Promise<void> {
           await hmset(`thread:${threadId}`, {
             url: threadUrl,
             timestamp: new Date().toISOString(),
-            status: 'revisited'
+            status: 'processed'
           });
         }
       })()
