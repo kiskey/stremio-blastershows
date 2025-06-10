@@ -1,7 +1,7 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio'; // Changed import for Cheerio
 import { ThreadContent, MagnetData } from './engine'; // Import interfaces
-import { sanitize } from 'dompurify'; // For HTML sanitization
+import DOMPurify from 'dompurify'; // Changed import for DOMPurify
 // Using js-levenshtein for Jaro-Winkler, as specified in requirements.
 import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
@@ -89,7 +89,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     }
   }
   // Sanitize title to prevent XSS (although DOMPurify is more for HTML, basic string sanitization)
-  title = sanitize(title, { USE_PROFILES: { html: false } });
+  title = DOMPurify.sanitize(title, { USE_PROFILES: { html: false } }); // Changed usage for DOMPurify
 
 
   // Extract posterUrl: <img class="ipsImage"> src attribute (first image in the post content)
