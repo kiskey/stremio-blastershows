@@ -127,7 +127,7 @@ export async function del(key: string): Promise<number> {
  * Use with extreme caution.
  * @returns A Promise that resolves when the purge is complete.
  */
-export async function purgeRedis(): Promise<void> { // Changed return type to Promise<void>
+export async function purgeRedis(): Promise<void> { // Corrected return type to Promise<void>
   try {
     console.warn('Purging all data from Redis database...');
     await redisClient.flushdb(); // Perform the action
