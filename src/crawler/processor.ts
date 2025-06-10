@@ -1,8 +1,9 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio'; // Changed import for Cheerio
 import { ThreadContent, MagnetData } from './engine'; // Import interfaces
-import DOMPurify from 'dompurify'; // Changed import for DOMPurify
-import { JSDOM } from 'jsdom'; // Import JSDOM for DOMPurify initialization
+// Correct import and initialization for DOMPurify with JSDOM
+import createDOMPurify from 'dompurify';
+import { JSDOM } from 'jsdom';
 // Using js-levenshtein for Jaro-Winkler, as specified in requirements.
 import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
@@ -72,7 +73,8 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
 
   // Initialize DOMPurify with a JSDOM window for Node.js environment
   const window = new JSDOM('').window;
-  const purify = DOMPurify(window);
+  const purify = createDOMPurify(window); // Corrected initialization for DOMPurify
+
 
   // Extract title: <span class="ipsType_break ipsContained"> text
   // Using .first() to ensure we get the first match in case of multiple
