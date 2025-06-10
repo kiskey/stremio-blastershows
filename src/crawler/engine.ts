@@ -1,9 +1,10 @@
 import axios from 'axios';
-import * as cheerio from 'cheerio'; // Changed import for Cheerio
+import * as cheerio from 'cheerio';
 import { config } from '../config';
 import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
 import { processThread } from './processor';
 import { logger } from '../utils/logger';
+import { normalizeTitle } from '../parser/title'; // Added import for normalizeTitle
 
 /**
  * Interface for MagnetData as specified in requirements.
