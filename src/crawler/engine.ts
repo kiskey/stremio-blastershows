@@ -248,9 +248,17 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   
-  // Use the nullish coalescing operator to provide a default value if threadStartedTime is undefined
-  // This directly addresses the suggestion and ensures 'confirmedThreadStartedTime' is always a string.
-  const confirmedThreadStartedTime: string = data.threadStartedTime ?? new Date().toISOString();
+  // Explicitly ensure threadStartedTime is a string, providing a fallback.
+  // This is the most robust type guard for the compiler in this scenario.
+  let confirmedThreadStartedTime: string;
+  if (typeof data.threadStartedTime === 'string') {
+    confirmedThreadStartedTime = data.threadStartedTime;
+  } else {
+    // This else block should theoretically not be reached if processThread is working correctly
+    // but it provides a compile-time guarantee and a runtime fallback.
+    logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${threadId}. Using current timestamp as fallback.`);
+    confirmedThreadStartedTime = new Date().toISOString(); 
+  }
   
   const now = new Date();
 
@@ -289,7 +297,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       continue;
     }
 
-    // Try to get resolution and size from magnet name (dn parameter) first
+    // Try to get resolution and size from magnet name (dn) first
     const { resolution: magnetResolution, size: magnetSize } = parseResolutionAndSizeFromMagnetName(magnet.name);
 
     // Fallback to thread-level parsed resolution if magnet name doesn't provide it
