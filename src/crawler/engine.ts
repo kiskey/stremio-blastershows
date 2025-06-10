@@ -248,16 +248,9 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   
-  // Implement the suggested type guard explicitly for threadStartedTime
-  let confirmedThreadStartedTime: string;
-  if (data.threadStartedTime !== undefined) {
-    confirmedThreadStartedTime = data.threadStartedTime;
-  } else {
-    // This fallback ensures confirmedThreadStartedTime is always a string,
-    // even if processThread (theoretically) failed to set it.
-    logger.warn(`threadStartedTime was unexpectedly undefined for threadId ${threadId}. Using current timestamp as fallback.`);
-    confirmedThreadStartedTime = new Date().toISOString(); 
-  }
+  // Use the nullish coalescing operator to provide a default value if threadStartedTime is undefined
+  // This directly addresses the suggestion and ensures 'confirmedThreadStartedTime' is always a string.
+  const confirmedThreadStartedTime: string = data.threadStartedTime ?? new Date().toISOString();
   
   const now = new Date();
 
