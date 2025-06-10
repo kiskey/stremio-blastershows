@@ -35,11 +35,14 @@ export async function hget(key: string, field: string): Promise<string | null> {
  * @param key The key of the hash.
  * @param field The field within the hash.
  * @param value The value to set.
- * @returns 'OK' if the field was set.
+ * @returns The number of fields that were added/updated.
  */
 export async function hset(key: string, field: string, value: string): Promise<number> {
   try {
     return await redisClient.hset(key, field, value);
+  } catch (error) {
+    console.error(`Error HSET key: ${key}, field: ${field}`, error);
+    return 0; // Return 0 on error
   }
 }
 
@@ -53,6 +56,9 @@ export async function hmset(key: string, data: Record<string, string>): Promise<
   try {
     // HMSET in ioredis accepts an array of key-value pairs or an object directly
     return await redisClient.hmset(key, data);
+  } catch (error) {
+    console.error(`Error HMSET key: ${key}, data:`, data, error);
+    return 0; // Return 0 on error
   }
 }
 
@@ -128,7 +134,7 @@ export async function purgeRedis(): Promise<void> { // Changed return type to Pr
     console.log('Redis database purged successfully.');
   } catch (error) {
     console.error('Error purging Redis database:', error);
-    // Log to Redis error queue if necessary, but this function doesn't return string now
+    // Errors during purge are logged to console. No return value needed here as per Promise<void>
   }
 }
 
