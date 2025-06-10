@@ -22,7 +22,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Create the thin production image
-FROM node:20-alpine # Changed from node:18-alpine to node:20-alpine
+FROM node:20-alpine 
 
 WORKDIR /app
 
