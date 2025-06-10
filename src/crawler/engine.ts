@@ -66,7 +66,6 @@ async function fetchHtml(url: string, retries: number = 3): Promise<string | nul
         const redirectUrl = response.headers.location;
         if (redirectUrl) {
             logger.warn(`Redirect detected from ${url} to ${redirectUrl}.`);
-            // You might want to update config.FORUM_URL if the domain changes permanently.
             // For now, axios follows redirects automatically.
         }
     }
@@ -249,8 +248,7 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   
-  // Robustly ensure threadStartedTime is a string, even if compiler thinks it's undefined.
-  // We know from processThread that it will always be a string.
+  // Explicitly ensure threadStartedTime is a string right after destructuring
   const confirmedThreadStartedTime: string = data.threadStartedTime || new Date().toISOString();
   
   const now = new Date();
@@ -343,7 +341,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
   const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
   const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
   const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-  // FIX: Use mergedSeasons here, not mergedLanguages
+  // FIX: Corrected variable name from mergedLanguages to mergedSeasons
   await hset(movieKey, 'seasons', mergedSeasons.join(','));
 }
 
@@ -379,7 +377,7 @@ async function revisitExistingThreads(): Promise<void> {
   const threadKeys = await redisClient.keys('thread:*');
 
   const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000; // hours to ms
-  const now = Date.now();
+  const now = Date.now(); // Corrected from Date.Now()
 
   const threadsToRevisit: string[] = [];
 
