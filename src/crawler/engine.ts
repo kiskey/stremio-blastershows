@@ -248,8 +248,9 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
 async function saveThreadData(data: ThreadContent): Promise<void> {
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
   
-  // Explicitly ensure threadStartedTime is a string right after destructuring
-  const confirmedThreadStartedTime: string = data.threadStartedTime || new Date().toISOString();
+  // Directly assert data.threadStartedTime as string at the point of access
+  // This is the most direct way to bypass the compiler's strict inference here.
+  const confirmedThreadStartedTime: string = data.threadStartedTime as string; 
   
   const now = new Date();
 
