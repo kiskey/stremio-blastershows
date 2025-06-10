@@ -129,9 +129,9 @@ export async function del(key: string): Promise<number> {
 export async function purgeRedis(): Promise<string> {
   try {
     console.warn('Purging all data from Redis database...');
-    // Explicitly return 'OK' string to bypass any potential type inference issues
-    await redisClient.flushdb(); // Perform the action
-    return 'OK'; // Return the expected string literal type
+    // Explicitly cast to string to fix TS2322 error
+    const result = await redisClient.flushdb() as string;
+    return result;
   } catch (error) {
     console.error('Error purging Redis database:', error);
     return 'error';
