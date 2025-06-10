@@ -30,20 +30,20 @@ export async function getCatalog(
     return { metas: [] }; // Return empty if catalog ID doesn't match
   }
 
-  // Fetch all show keys from Redis.
-  // We'll treat each 'show' as a 'movie' for catalog display.
+  // Fetch all show keys from Redis. Now, these keys are based on threadId: show:<threadId>
   const showKeys = await redisClient.keys('show:*');
   let allMovies: DiscoverableItem[] = [];
 
   for (const key of showKeys) {
-    const showData = await hgetall(key);
-    if (Object.keys(showData).length > 0) {
-      // Ensure stremioId is generated consistently as 'tt' + normalized title
-      const stremioId = showData.stremioId || `tt${showData.originalTitle?.toLowerCase().replace(/[^a-z0-9]/g, '') || ''}`;
-      const posterUrl = showData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(showData.originalTitle || 'No Poster')}`;
+    const showData = await hgetall(key); // Fetch data for show:<threadId>
+    if (Object.keys(showData).length > 0 && showData.stremioId && showData.originalTitle) {
+      // Use the stored stremioId and originalTitle
+      const stremioId = showData.stremioId;
+      const originalTitle = showData.originalTitle;
+      const posterUrl = showData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(originalTitle || 'No Poster')}`;
       allMovies.push({
         id: stremioId,
-        name: showData.originalTitle || 'Unknown Title',
+        name: originalTitle,
         type: 'movie', // Always 'movie' type for catalog display
         poster: posterUrl,
       });
@@ -83,35 +83,39 @@ export async function getMeta(type: string, id: string): Promise<MetaResponse> {
     return { meta: null };
   }
 
-  const { movieId } = parseStremioId(id);
+  const { movieId } = parseStremioId(id); // movieId is the normalized title string without 'tt'
 
   if (!movieId) {
     logger.warn(`Invalid Stremio ID format for meta request: ${id}`);
     return { meta: null };
   }
 
-  // Fetch show details from Redis using the normalized title as the movie ID
-  const showData = await hgetall(`show:${movieId}`);
+  // Find the actual show data by iterating through all show keys and matching the stremioId
+  let foundShowData: Record<string, string> = {};
+  const allShowKeys = await redisClient.keys('show:*'); // Get all show:<threadId> keys
+  for (const key of allShowKeys) {
+    const data = await hgetall(key);
+    if (data.stremioId === id) { // Match against the full Stremio ID (e.g., ttnormalizedtitle)
+      foundShowData = data;
+      break;
+    }
+  }
 
-  if (Object.keys(showData).length === 0) {
-    logger.info(`Movie with ID ${movieId} not found in Redis.`);
+  if (Object.keys(foundShowData).length === 0) {
+    logger.info(`Movie with Stremio ID ${id} not found in Redis.`);
     return { meta: null };
   }
 
   // Construct the meta object for the 'movie'.
-  // For 'movie' type, the 'videos' array is not typically used for episodes.
-  // Streams are fetched via the getStream handler directly.
   const meta = {
     id: id,
-    name: showData.originalTitle || 'Unknown Title',
+    name: foundShowData.originalTitle || 'Unknown Title',
     type: 'movie' as const, // Explicitly cast to 'movie' literal type
-    poster: showData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(showData.originalTitle || 'No Poster')}`,
-    description: showData.description || 'No description available.',
-    background: showData.posterUrl,
+    poster: foundShowData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(foundShowData.originalTitle || 'No Poster')}`,
+    description: foundShowData.description || 'No description available.',
+    background: foundShowData.posterUrl,
     // Do NOT include 'videos' array here as per Stremio's 'movie' type convention
     // and the request to list all episodes/qualities under the 'stream' endpoint.
-    // However, if the source contains a single item (like a movie), we might
-    // put its primary stream info here. For now, we'll rely on the stream handler.
   };
 
   logger.info(`Returning meta for ${meta.id}.`);
@@ -133,7 +137,7 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
     return { streams: [] };
   }
 
-  const { movieId } = parseStremioId(id);
+  const { movieId } = parseStremioId(id); // movieId is the normalized title string without 'tt'
 
   if (!movieId) {
     logger.warn(`Invalid Stremio ID format for stream: ${id}`);
@@ -142,36 +146,57 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
 
   const allStreams: Stream[] = [];
 
-  // Find all episode keys associated with this movie ID (normalized title)
-  // This involves scanning Redis keys, which can be slow for many entries.
-  // A more efficient approach would be to store a sorted set of episode IDs under the show key.
-  const episodeKeys = await redisClient.keys(`episode:season:tt${movieId}:*`);
+  // Find all episode keys associated with this stremioMovieId
+  // The pattern should match: episode:tt<normalizedTitle>:s<season>e<episode>:<resolutionTag>
+  const episodeKeys = await redisClient.keys(`episode:${id}:*`); // Use the full 'id' (stremioMovieId) for consistency
 
-  logger.debug(`Found ${episodeKeys.length} episode keys for movie ID ${movieId}.`);
+  logger.debug(`Found ${episodeKeys.length} episode keys for movie ID ${id}.`);
+
+  // Get the original show title for better stream titles
+  let originalShowTitle = 'Unknown Title';
+  const allShowKeys = await redisClient.keys('show:*');
+  for (const key of allShowKeys) {
+      const data = await hgetall(key);
+      if (data.stremioId === id) {
+          originalShowTitle = data.originalTitle || originalShowTitle;
+          break;
+      }
+  }
+
 
   for (const episodeKey of episodeKeys) {
     const episodeData = await hgetall(episodeKey);
     if (Object.keys(episodeData).length > 0 && episodeData.magnet) {
-      // Extract season and episode from the episodeKey for stream title
+      // Extract season, episode, and resolution from the episodeKey for stream title
+      // Example key: episode:ttmovietitle:s1e1:720p:0
       const keyParts = episodeKey.split(':');
-      const seasonNum = keyParts[keyParts.length - 2];
-      const episodeNum = keyParts[keyParts.length - 1];
+      const seasonEpisodePart = keyParts[3]; // e.g., s1e1
+      const resolutionPart = keyParts[4]; // e.g., 720p
 
-      // Extract original show title from the main showData for better stream titles
-      const showData = await hgetall(`show:${movieId}`);
-      const originalTitle = showData.originalTitle || 'Unknown Title';
+      const seasonMatch = seasonEpisodePart.match(/s(\d+)/i);
+      const episodeMatch = seasonEpisodePart.match(/e(\d+)/i);
 
-      const streamTitle = `${originalTitle} S${seasonNum} E${episodeNum} ${episodeData.size ? `[${episodeData.size}]` : ''} ${episodeData.name ? `(${episodeData.name})` : ''}`.trim();
+      const seasonNum = seasonMatch ? parseInt(seasonMatch[1], 10) : undefined;
+      const episodeNum = episodeMatch ? parseInt(episodeMatch[1], 10) : undefined;
+
+      const streamTitle = `${originalShowTitle}` +
+                          (seasonNum ? ` S${seasonNum}` : '') +
+                          (episodeNum ? ` E${episodeNum}` : '') +
+                          ` ${resolutionPart ? `[${resolutionPart}]` : ''}` +
+                          ` ${episodeData.size ? `(${episodeData.size})` : ''}` +
+                          ` ${episodeData.name ? ` - ${episodeData.name}` : ''}`.trim();
 
       allStreams.push({
         name: config.ADDON_NAME, // Or a more specific source name
         title: streamTitle,
         url: episodeData.magnet,
-        // Add P2P hint for magnet links
+        // Add P2P hint for magnet links as per Stremio guide
         behaviorHints: {
-          p2p: true,
-          // You might also add `filename` here if you have it
-          filename: `${originalTitle} S${seasonNum} E${episodeNum}.torrent` // Example filename
+          p2p: true, // Crucial for torrents
+          filename: `${originalShowTitle}` +
+                    (seasonNum ? ` S${seasonNum}` : '') +
+                    (episodeNum ? ` E${episodeNum}` : '') +
+                    `.torrent` // Example filename for torrent client
         }
       });
     }
