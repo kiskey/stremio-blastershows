@@ -120,6 +120,30 @@ function discoverThreadUrls(html: string, baseUrl: string): string[] {
 }
 
 /**
+ * Extracts a unique numerical thread ID from a forum topic URL.
+ * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
+ * @param threadUrl The URL of the forum thread.
+ * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
+ */
+function getUniqueThreadId(threadUrl: string): string {
+  const url = new URL(threadUrl);
+  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
+  const pathSegments = url.pathname.split('/');
+  // Find the segment that starts with a number and contains a hyphen
+  // e.g., "133067-mercy-for-none-s01-..."
+  const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
+
+  if (topicSegment) {
+    return topicSegment.split('-')[0]; // Extract just the number
+  } else {
+    // Fallback if the numerical ID pattern is not found
+    logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
+    return Buffer.from(threadUrl).toString('base64');
+  }
+}
+
+
+/**
  * Crawls a single forum page to discover new threads.
  * @param pageNum The page number to crawl.
  * @returns True if the page was successfully crawled and new threads were found, false otherwise.
@@ -145,7 +169,9 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
   // Use a worker thread pool for parallel processing if MAX_CONCURRENCY > 1
   const processingPromises: Promise<void>[] = [];
   for (const threadUrl of threadUrls) {
-    const threadId = new URL(threadUrl).pathname.split('/').pop()?.split('-')[0] || Buffer.from(threadUrl).toString('base64'); // Simple ID for tracking
+    // Use the new robust function to get the unique threadId
+    const threadId = getUniqueThreadId(threadUrl);
+    
     // Check if thread already processed or updated recently (using thread:{threadId} hash)
     const lastProcessed = await hgetall(`thread:${threadId}`);
     const now = new Date().toISOString();
@@ -165,7 +191,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
             // Store processed data in Redis (movie, episode, thread hashes)
             await saveThreadData(processedData);
             // Update thread tracking hash
-            await hmset(`thread:${threadId}`, {
+            await hmset(`thread:${processedData.threadId}`, { // Use processedData.threadId to ensure consistency
               url: threadUrl,
               timestamp: now,
               status: 'processed'
@@ -332,7 +358,7 @@ async function revisitExistingThreads(): Promise<void> {
         const processedData = await processThread(threadUrl);
         if (processedData) {
           await saveThreadData(processedData);
-          const threadId = new URL(threadUrl).pathname.split('/').pop()?.split('-')[0] || Buffer.from(threadUrl).toString('base64');
+          const threadId = getUniqueThreadId(threadUrl); // Use the robust unique ID function
           await hmset(`thread:${threadId}`, {
             url: threadUrl,
             timestamp: new Date().toISOString(),
