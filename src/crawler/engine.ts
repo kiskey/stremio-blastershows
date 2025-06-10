@@ -22,9 +22,10 @@ export interface ThreadContent {
   title: string;
   posterUrl: string;
   magnets: MagnetData[];
-  timestamp: string; // ISO8601 format
+  timestamp: string; // ISO8601 format (last modified)
   threadId: string; // Unique ID for the thread
   originalUrl: string; // The URL of the thread page
+  threadStartedTime: string; // ISO8601 format (initial post time)
 }
 
 // Global variable to hold the current page number for new content crawling
@@ -217,11 +218,36 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
 }
 
 /**
+ * Parses resolution and size from a magnet name/filename.
+ * Example magnet name: "Cooku With Comali (2025) S06E01 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC - 7GB].mkv"
+ * @param magnetName The name extracted from the magnet URI's 'dn' parameter.
+ * @returns An object containing parsed resolution and size, or null if not found.
+ */
+function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?: string, size?: string } {
+  const result: { resolution?: string, size?: string } = {};
+
+  // Regex for resolution (e.g., 1080p, 720p, 480p, 4K)
+  const resolutionMatch = magnetName.match(/(\d{3,4}p|4K)/i);
+  if (resolutionMatch) {
+    result.resolution = resolutionMatch[1];
+  }
+
+  // Regex for size (e.g., 7GB, 550MB, 2.4GB)
+  const sizeMatch = magnetName.match(/(\d+\.?\d*\s*[KMGT]?B)/i);
+  if (sizeMatch) {
+    result.size = sizeMatch[1];
+  }
+
+  return result;
+}
+
+
+/**
  * Saves processed thread data into Redis according to the defined schema.
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
-  const { title, posterUrl, magnets, timestamp, threadId, originalUrl } = data;
+  const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime } = data;
   const now = new Date();
 
   // Basic normalization for show title to create a consistent Stremio ID
@@ -236,52 +262,68 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     posterUrl: posterUrl,
     stremioId: stremioMovieId, // Store the consistent Stremio ID within the hash
     lastUpdated: now.toISOString(),
-    // We can also store the threadId associated with this movie for debugging/lookup
-    associatedThreadId: threadId
+    associatedThreadId: threadId, // Link back to the original threadId
+    threadStartedTime: threadStartedTime // Store the thread started time
   });
-  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId})`);
+  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${threadStartedTime})`);
 
 
-  // Using the title parser to get more structured data (season, episode, etc.)
-  const { season, episodeStart, episodeEnd, languages, resolution, qualityTags } = await (async () => {
-    // Dynamically import to avoid circular dependency if title.ts depends on redis
+  // Using the title parser to get more structured data (season, episode, etc.) from overall title
+  const { season, episodeStart, episodeEnd, languages } = await (async () => {
     const { parseTitle } = await import('../parser/title');
     return parseTitle(title);
   })();
 
   let seasonNum = season || 1; // Default to Season 1 if not parsed
-  let episodeCount = 1;
+  let episodeCount = (episodeStart !== undefined && episodeEnd !== undefined) ? (episodeEnd - episodeStart + 1) : 1;
 
-  if (episodeStart !== undefined && episodeEnd !== undefined) {
-    episodeCount = episodeEnd - episodeStart + 1;
-  }
-
-  for (let i = 0; i < episodeCount; i++) {
-    const currentEpisodeNum = (episodeStart || 1) + i;
-    // Episode keys are now constructed to link to the stremioMovieId and include S/E/Res.
-    // Adding `:${i}` at the end ensures unique keys if a single thread has multiple magnets
-    // for the *same* season/episode/resolution combination.
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${resolution || 'unknown'}:${i}`;
-
-    const magnet = magnets[i]?.url || magnets[0]?.url || ''; // Take specific magnet if multiple, fallback to first
-    const magnetName = magnets[i]?.name || magnets[0]?.name || '';
-    const magnetSize = magnets[i]?.size || magnets[0]?.size || '';
-
-    // Store individual episode/quality data if a valid magnet exists
-    if (magnet) {
-      await hmset(episodeKey, {
-        magnet: magnet,
-        name: magnetName,
-        title: `${title} | S${seasonNum} | E${currentEpisodeNum} ${resolution ? `[${resolution}]` : ''} ${languages.length ? `[${languages.join('/')}]` : ''} ${magnetSize ? `(${magnetSize})` : ''}`,
-        size: magnetSize,
-        timestamp: now.toISOString(),
-        threadUrl: originalUrl, // Store the original thread URL for debugging/reference
-        stremioMovieId: stremioMovieId // Link back to the main movie ID
-      });
-      logger.info(`Saved episode data for ${episodeKey} (Magnet: ${magnet.substring(0, 30)}...)`);
-    } else {
-      logger.warn(`Skipping saving episode data for ${episodeKey} due to missing magnet.`);
+  // Process each magnet as a separate stream entry
+  for (let i = 0; i < magnets.length; i++) {
+    const magnet = magnets[i];
+    if (!magnet || !magnet.url) {
+      logger.warn(`Skipping magnet at index ${i} for thread ${threadId} due to missing URL.`);
+      continue;
     }
+
+    // Try to get resolution and size from magnet name (dn parameter) first
+    const { resolution: magnetResolution, size: magnetSize } = parseResolutionAndSizeFromMagnetName(magnet.name);
+
+    // Fallback to thread-level parsed resolution if magnet name doesn't provide it
+    const finalResolution = magnetResolution || (await (async () => {
+        const { parseTitle } = await import('../parser/title');
+        const parsedThreadTitle = parseTitle(title);
+        return parsedThreadTitle.resolution;
+    })());
+    const finalSize = magnetSize || magnet.size || ''; // Use magnet.size if present, otherwise empty
+
+    const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount); // Handle multiple magnets for same episode, incrementing if needed
+
+    // Episode keys are now constructed to link to the stremioMovieId and include S/E/Res.
+    // Using a hash of the magnet URL to guarantee unique keys for each stream.
+    const magnetHash = Buffer.from(magnet.url).toString('base64').substring(0, 10); // Short hash
+    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${finalResolution || 'unknown'}:${magnetHash}`;
+
+    // Construct a more descriptive stream title
+    const streamTitle = `${title}` +
+                        (seasonNum ? ` S${seasonNum}` : '') +
+                        (currentEpisodeNum ? ` E${currentEpisodeNum}` : '') +
+                        ` ${finalResolution ? `[${finalResolution}]` : ''}` +
+                        ` ${languages.length ? `[${languages.join('/')}]` : ''}` +
+                        ` ${finalSize ? `(${finalSize})` : ''}` +
+                        ` - ${magnet.name}`.trim();
+
+
+    await hmset(episodeKey, {
+      magnet: magnet.url,
+      name: magnet.name,
+      title: streamTitle,
+      size: finalSize,
+      resolution: finalResolution,
+      timestamp: now.toISOString(),
+      threadUrl: originalUrl,
+      stremioMovieId: stremioMovieId
+    });
+    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}...)`);
   }
 
   // Update languages for the movie hash if new languages are found
