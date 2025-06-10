@@ -1,0 +1,138 @@
+import axios from 'axios';
+import cheerio from 'cheerio';
+import { ThreadContent, MagnetData } from './engine'; // Import interfaces
+import { sanitize } from 'dompurify'; // For HTML sanitization
+// Using js-levenshtein for Jaro-Winkler, as specified in requirements.
+import jaroWinkler from 'js-levenshtein';
+import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
+
+/**
+ * Fetches the content of a given URL with error handling and retries.
+ * @param url The URL to fetch.
+ * @param retries Remaining retries.
+ * @returns The HTML content as a string, or null if fetching fails.
+ */
+async function fetchHtmlForProcessing(url: string, retries: number = 3): Promise<string | null> {
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
+      },
+      maxRedirects: 10, // Handle 302 redirects
+      validateStatus: (status) => status >= 200 && status < 400 // Accept 2xx and 3xx
+    });
+    return response.data;
+  } catch (error: any) {
+    console.error(`Error fetching thread URL ${url}:`, error.message);
+    if (retries > 0) {
+      const delay = Math.pow(2, (3 - retries)) * 1000; // Exponential backoff
+      console.log(`Retrying thread ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return fetchHtmlForProcessing(url, retries - 1);
+    }
+    console.error(`Failed to fetch thread ${url} after multiple retries.`);
+    // TODO: Add to Redis error queue here as well
+    return null;
+  }
+}
+
+/**
+ * Validates a magnet URI using a BTIH regex.
+ * @param uri The magnet URI string.
+ * @returns True if the URI is a valid magnet, false otherwise.
+ */
+function validateMagnetUri(uri: string): boolean {
+  // BTIH regex for magnet URI validation
+  const btihRegex = /^magnet:\?xt=urn:btih:[a-zA-Z0-9]{40,}.*$/i;
+  return btihRegex.test(uri);
+}
+
+/**
+ * Processes a single forum thread page to extract relevant content.
+ * @param threadUrl The URL of the forum thread page.
+ * @returns A Promise resolving to ThreadContent object or null if processing fails.
+ */
+export async function processThread(threadUrl: string): Promise<ThreadContent | null> {
+  console.log(`Processing thread: ${threadUrl}`);
+  const html = await fetchHtmlForProcessing(threadUrl);
+  if (!html) {
+    return null;
+  }
+
+  const $ = cheerio.load(html);
+
+  // Extract title: <span class="ipsType_break ipsContained"> text
+  // Using .first() to ensure we get the first match in case of multiple
+  const titleElement = $('span.ipsType_break.ipsContained').first();
+  let title = titleElement.text().trim();
+  if (!title) {
+    // Fallback parsing: Try other common title elements if the main one fails
+    console.warn(`Could not find primary title element for ${threadUrl}. Trying fallback.`);
+    title = $('meta[property="og:title"]').attr('content')?.trim() || $('title').text().trim();
+    if (!title) {
+      console.error(`Failed to extract title from ${threadUrl} using fallbacks.`);
+      return null;
+    }
+  }
+  // Sanitize title to prevent XSS (although DOMPurify is more for HTML, basic string sanitization)
+  title = sanitize(title, { USE_PROFILES: { html: false } });
+
+
+  // Extract posterUrl: <img class="ipsImage"> src attribute (first image in the post content)
+  // This might need refinement based on exact forum structure.
+  const posterElement = $('div.ipsType_normal.ipsType_richText img.ipsImage').first();
+  let posterUrl = posterElement.attr('src') || '';
+  if (!posterUrl) {
+    // Fallback: Check for meta og:image or a common placeholder
+    posterUrl = $('meta[property="og:image"]').attr('content') || '';
+    if (!posterUrl) {
+        console.warn(`No specific poster URL found for ${threadUrl}. Using placeholder.`);
+        // Placeholder for missing poster URL
+        posterUrl = `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(title || 'No Poster')}`;
+    }
+  }
+
+  // Extract magnets: <a class="magnet-plugin"> elements
+  const magnets: MagnetData[] = [];
+  $('a.magnet-plugin').each((index, element) => {
+    const href = $(element).attr('href');
+    if (href && validateMagnetUri(href)) {
+      // Extract name from the link text or title attribute
+      const name = $(element).text().trim() || $(element).attr('title')?.trim() || 'Unknown Magnet';
+      // Size is usually part of the link text or sibling elements, requires more specific parsing
+      // For now, we'll try to guess size from nearby text or leave it empty.
+      const sizeText = $(element).closest('p, div, li').text().match(/(\d+\.?\d*\s*[KMGT]?B)/i);
+      const size = sizeText ? sizeText[0] : '';
+      magnets.push({ url: href, name: name, size: size });
+    } else if (href) {
+      console.warn(`Invalid magnet URI found: ${href} in thread ${threadUrl}`);
+    }
+  });
+
+  // Extract timestamp: Last modified time
+  // This often requires specific parsing of a timestamp element, e.g., <time datetime="ISO8601">
+  const timestampElement = $('time.ipsType_reset').first(); // Common timestamp element
+  let timestamp = timestampElement.attr('datetime') || new Date().toISOString(); // Default to now
+
+  if (!timestamp || isNaN(new Date(timestamp).getTime())) {
+    console.warn(`Could not parse valid timestamp for ${threadUrl}. Using current time.`);
+    timestamp = new Date().toISOString();
+  }
+
+  // Generate a simple thread ID. A more robust ID might be needed for actual forum structure.
+  // Using the last part of the URL path as a simple ID, assuming it's unique enough.
+  const threadId = new URL(threadUrl).pathname.split('/').pop()?.split('-')[0] || Buffer.from(threadUrl).toString('base64');
+
+
+  const processedContent: ThreadContent = {
+    title: title,
+    posterUrl: posterUrl,
+    magnets: magnets,
+    timestamp: timestamp,
+    threadId: threadId,
+    originalUrl: threadUrl
+  };
+
+  console.log(`Processed thread ${threadUrl}: Title="${processedContent.title}", Magnets: ${processedContent.magnets.length}`);
+  return processedContent;
+}
