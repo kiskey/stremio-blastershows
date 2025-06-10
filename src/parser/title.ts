@@ -1,6 +1,5 @@
-// Removed previous import statement for 'js-levenshtein'
-// The declaration in src/js-levenshtein.d.ts will now provide the types.
-import { jaroWinkler } from 'js-levenshtein'; // This will now correctly pull from the .d.ts file
+// Reverted to named import, relying on src/js-levenshtein.d.ts to provide the correct types.
+import { jaroWinkler } from 'js-levenshtein';
 
 import { logger } from '../utils/logger'; // Import the centralized logger
 
