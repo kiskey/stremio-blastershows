@@ -1,7 +1,5 @@
-// Corrected import: Use named import for jaroWinkler if it's exported that way,
-// or import the whole module and access as a property.
-// Based on typical `js-levenshtein` usage, `jaroWinkler` is a named export.
-import { jaroWinkler } from 'js-levenshtein';
+// Corrected import: Import the entire module and access jaroWinkler as a property
+import * as Levenshtein from 'js-levenshtein';
 import { logger } from '../utils/logger'; // Import the centralized logger
 
 /**
@@ -158,7 +156,7 @@ export function fuzzyMatch(title1: string, title2: string, threshold: number = 0
 
   // jaroWinkler(a, b) returns the distance (0 for identical, 1 for completely different).
   // We need similarity, so 1 - distance.
-  const similarity = 1 - jaroWinkler(normalized1, normalized2);
+  const similarity = 1 - Levenshtein.jaroWinkler(normalized1, normalized2); // Corrected usage
 
   logger.debug(`Fuzzy matching "${title1}" vs "${title2}": Normalized "${normalized1}" vs "${normalized2}"`);
   logger.debug(`Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
