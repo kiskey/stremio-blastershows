@@ -12,7 +12,8 @@
     "resolveJsonModule": true
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "src/**/*.d.ts" // Explicitly include declaration files
   ],
   "exclude": [
     "node_modules"
