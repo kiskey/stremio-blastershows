@@ -1,34 +1,17 @@
 /**
- * Parses a Stremio ID into its component parts: showId, seasonNum, and episodeNum.
- * Stremio IDs for series typically follow the format: {showId}:{seasonNum}:{episodeNum}
- * or just {showId} for meta requests.
+ * Parses a Stremio ID to extract relevant components.
+ * For "movie" type, the ID will primarily be `tt<normalizedTitle>`.
  *
- * @param stremioId The Stremio ID string (e.g., 'tt12345:1:2', 'tt12345:1', or 'tt12345').
- * @returns An object containing showId, seasonNum, and episodeNum.
- * `seasonNum` and `episodeNum` will be `undefined` if not present in the ID.
+ * @param stremioId The Stremio ID string (e.g., "ttnormalizedtitle").
+ * @returns An object containing the parsed components.
  */
-export function parseStremioId(stremioId: string): { showId?: string; seasonNum?: number; episodeNum?: number } {
-  if (!stremioId) {
-    return {};
-  }
+export function parseStremioId(stremioId: string): { movieId: string | null } {
+    const parts = stremioId.split(':');
+    let movieId: string | null = null;
 
-  const parts = stremioId.split(':');
-  const showId = parts[0];
-  const seasonNum = parts.length > 1 ? parseInt(parts[1], 10) : undefined;
-  const episodeNum = parts.length > 2 ? parseInt(parts[2], 10) : undefined;
+    if (parts.length > 0 && parts[0].startsWith('tt')) {
+        movieId = parts[0].substring(2); // Remove 'tt' prefix to get the normalized title
+    }
 
-  // Basic validation to ensure showId is not empty and season/episode are valid numbers if present
-  if (!showId) {
-    return {};
-  }
-
-  if (seasonNum !== undefined && isNaN(seasonNum)) {
-    return {};
-  }
-
-  if (episodeNum !== undefined && isNaN(episodeNum)) {
-    return {};
-  }
-
-  return { showId, seasonNum, episodeNum };
+    return { movieId };
 }
