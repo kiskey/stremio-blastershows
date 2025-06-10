@@ -32,7 +32,7 @@ export async function getCatalog(
 
   // Fetch all movie keys from Redis. These keys are now based on stremioMovieId: movie:<stremioMovieId>
   const movieKeys = await redisClient.keys('movie:*');
-  let allMovies: DiscoverableItem[] = [];
+  let allMovies: (DiscoverableItem & { threadStartedTime?: string })[] = []; // Add threadStartedTime for sorting
 
   for (const key of movieKeys) {
     const movieData = await hgetall(key); // Fetch data for movie:<stremioMovieId>
@@ -46,6 +46,7 @@ export async function getCatalog(
         name: originalTitle,
         type: 'movie', // Always 'movie' type for catalog display
         poster: posterUrl,
+        threadStartedTime: movieData.threadStartedTime // Add for sorting
       });
     }
   }
@@ -59,9 +60,13 @@ export async function getCatalog(
     logger.debug(`Catalog search for "${searchQuery}" returned ${allMovies.length} results.`);
   }
 
-  // Simple in-memory pagination (for demonstration)
-  // Ensure we sort for consistent pagination results
-  allMovies.sort((a, b) => a.name.localeCompare(b.name));
+  // Sort by threadStartedTime in descending order (latest first)
+  allMovies.sort((a, b) => {
+    const dateA = new Date(a.threadStartedTime || 0).getTime();
+    const dateB = new Date(b.threadStartedTime || 0).getTime();
+    return dateB - dateA; // Descending order
+  });
+
   const paginatedMovies = allMovies.slice(skip, skip + 100); // Limit to 100 items per page
 
   logger.info(`Returning ${paginatedMovies.length} items for catalog. Total available: ${allMovies.length}`);
@@ -139,7 +144,7 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
   const allStreams: Stream[] = [];
 
   // Find all episode keys associated with this stremioMovieId
-  // The pattern should match: episode:<stremioMovieId>:s<S>e<E>:<resolutionTag>:<index>
+  // The pattern should match: episode:<stremioMovieId>:s<S>e<E>:<resolutionTag>:<hash>
   const episodeKeys = await redisClient.keys(`episode:${id}:*`); // Use the full 'id' (stremioMovieId) for consistency
 
   logger.debug(`Found ${episodeKeys.length} episode keys for movie ID ${id}.`);
@@ -156,9 +161,9 @@ export async function getStream(type: string, id: string): Promise<StreamRespons
     const episodeData = await hgetall(episodeKey);
     if (Object.keys(episodeData).length > 0 && episodeData.magnet) {
       // Extract season, episode, and resolution from the episodeKey for stream title
-      // Example key: episode:ttmovietitle:s1e1:720p:0
+      // Example key: episode:ttmovietitle:s1e1:720p:HASH
       const keyParts = episodeKey.split(':');
-      // keyParts will be: [0: "episode", 1: "ttmovietitle", 2: "s1e1", 3: "720p", 4: "0"]
+      // keyParts will be: [0: "episode", 1: "ttmovietitle", 2: "s1e1", 3: "720p", 4: "HASH"]
       const seasonEpisodePart = keyParts[2]; // e.g., s1e1
       const resolutionPart = keyParts[3]; // e.g., 720p
 
