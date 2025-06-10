@@ -40,9 +40,6 @@ export async function hget(key: string, field: string): Promise<string | null> {
 export async function hset(key: string, field: string, value: string): Promise<number> {
   try {
     return await redisClient.hset(key, field, value);
-  } catch (error) {
-    console.error(`Error HSET key: ${key}, field: ${field}`, error);
-    return 0; // Return 0 on error, or throw to be handled upstream
   }
 }
 
@@ -56,9 +53,6 @@ export async function hmset(key: string, data: Record<string, string>): Promise<
   try {
     // HMSET in ioredis accepts an array of key-value pairs or an object directly
     return await redisClient.hmset(key, data);
-  } catch (error) {
-    console.error(`Error HMSET key: ${key}, data:`, data, error);
-    return 0;
   }
 }
 
@@ -125,16 +119,16 @@ export async function del(key: string): Promise<number> {
 /**
  * Purges all data from the Redis database.
  * Use with extreme caution.
+ * @returns A Promise that resolves when the purge is complete.
  */
-export async function purgeRedis(): Promise<string> {
+export async function purgeRedis(): Promise<void> { // Changed return type to Promise<void>
   try {
     console.warn('Purging all data from Redis database...');
-    // Explicitly cast to string to fix TS2322 error
-    const result = await redisClient.flushdb() as string;
-    return result;
+    await redisClient.flushdb(); // Perform the action
+    console.log('Redis database purged successfully.');
   } catch (error) {
     console.error('Error purging Redis database:', error);
-    return 'error';
+    // Log to Redis error queue if necessary, but this function doesn't return string now
   }
 }
 
