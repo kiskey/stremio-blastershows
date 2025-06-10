@@ -85,8 +85,8 @@ app.get('/debug/crawled-data', async (req, res) => {
   logger.info('Received request for crawled data debug endpoint.');
   try {
     const allThreadKeys = await redisClient.keys('thread:*');
-    const allMovieKeys = await redisClient.keys('show:*');
-    const allEpisodeKeys = await redisClient.keys('episode:*');
+    const allMovieKeys = await redisClient.keys('show:*'); // Keys are now show:<threadId>
+    const allEpisodeKeys = await redisClient.keys('episode:*'); // Keys are episode:<stremioMovieId>:s<S>e<E>:<res>
 
     const crawledThreads: { [key: string]: any } = {};
     for (const key of allThreadKeys) {
@@ -94,25 +94,37 @@ app.get('/debug/crawled-data', async (req, res) => {
       crawledThreads[key] = data;
     }
 
-    const crawledMovies: { [key: string]: any } = {};
+    const crawledMovies: { [stremioId: string]: any } = {};
     for (const key of allMovieKeys) {
       const data = await hgetall(key);
-      crawledMovies[key] = data;
+      if (data.stremioId) {
+        crawledMovies[data.stremioId] = {
+          originalTitle: data.originalTitle,
+          posterUrl: data.posterUrl,
+          lastUpdated: data.lastUpdated,
+          threadId: key.replace('show:', '') // Link back to the original threadId
+        };
+      }
     }
 
-    const crawledEpisodes: { [key: string]: any } = {};
+    const crawledEpisodes: { [stremioMovieId: string]: { [episodeKey: string]: any } } = {};
     for (const key of allEpisodeKeys) {
       const data = await hgetall(key);
-      // Only include magnet if available and valid to avoid exposing invalid data
-      if (data.magnet && data.magnet.startsWith('magnet:?xt=urn:btih:')) {
-        crawledEpisodes[key] = {
-            title: data.title,
-            magnet: data.magnet,
-            size: data.size,
-            threadUrl: data.threadUrl
+      if (data.stremioMovieId && data.magnet && data.magnet.startsWith('magnet:?xt=urn:btih:')) {
+        if (!crawledEpisodes[data.stremioMovieId]) {
+          crawledEpisodes[data.stremioMovieId] = {};
+        }
+        crawledEpisodes[data.stremioMovieId][key] = {
+          title: data.title,
+          magnet: data.magnet,
+          size: data.size,
+          threadUrl: data.threadUrl
         };
-      } else {
-        crawledEpisodes[key] = {
+      } else if (data.stremioMovieId) {
+        if (!crawledEpisodes[data.stremioMovieId]) {
+          crawledEpisodes[data.stremioMovieId] = {};
+        }
+        crawledEpisodes[data.stremioMovieId][key] = {
             title: data.title,
             magnet: 'N/A (invalid or missing)',
             size: data.size,
@@ -121,17 +133,16 @@ app.get('/debug/crawled-data', async (req, res) => {
       }
     }
 
-
     res.setHeader('Content-Type', 'application/json');
     res.json({
       summary: {
         totalThreadsTracked: allThreadKeys.length,
-        totalMoviesDiscovered: allMovieKeys.length,
-        totalEpisodesDiscovered: allEpisodeKeys.length,
+        totalMoviesDiscovered: Object.keys(crawledMovies).length, // Count unique Stremio movie IDs
+        totalEpisodeStreamsDiscovered: allEpisodeKeys.length,
       },
-      threads: crawledThreads,
-      movies: crawledMovies, // Movies in catalog
-      episodesWithMagnets: crawledEpisodes // Detailed episode/stream info
+      threadsData: crawledThreads, // Raw thread data by threadId
+      moviesInCatalog: crawledMovies, // Movies as they appear in catalog (by Stremio ID)
+      episodesByMovie: crawledEpisodes // Episodes grouped by Stremio Movie ID
     });
   } catch (error: any) {
     logger.error('Error fetching crawled data:', error);
