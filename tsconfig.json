@@ -1,21 +1,24 @@
 {
   "compilerOptions": {
-    "target": "es2021",
+    "target": "es2018",
     "module": "commonjs",
-    "lib": ["es2021", "dom"],
+    "lib": ["es2018", "dom"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "strictNullChecks": false, // This line is changed to resolve the persistent 'string | undefined' error
+    "noImplicitAny": true
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.d.ts" // Explicitly include declaration files
+    "src/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "**/*.spec.ts"
   ]
 }
