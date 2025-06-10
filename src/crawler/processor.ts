@@ -5,6 +5,7 @@ import { sanitize } from 'dompurify'; // For HTML sanitization
 // Using js-levenshtein for Jaro-Winkler, as specified in requirements.
 import jaroWinkler from 'js-levenshtein';
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
+import { logger } from '../utils/logger'; // Import the centralized logger
 
 /**
  * Fetches the content of a given URL with error handling and retries.
@@ -23,15 +24,22 @@ async function fetchHtmlForProcessing(url: string, retries: number = 3): Promise
     });
     return response.data;
   } catch (error: any) {
-    console.error(`Error fetching thread URL ${url}:`, error.message);
+    logger.error(`Error fetching thread URL ${url}:`, error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Failed to fetch thread URL: ${url}`,
+      error: error.message,
+      url: url
+    });
+
     if (retries > 0) {
       const delay = Math.pow(2, (3 - retries)) * 1000; // Exponential backoff
-      console.log(`Retrying thread ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
+      logger.warn(`Retrying thread ${url} in ${delay / 1000} seconds... (${retries} retries left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchHtmlForProcessing(url, retries - 1);
     }
-    console.error(`Failed to fetch thread ${url} after multiple retries.`);
-    // TODO: Add to Redis error queue here as well
+    logger.error(`Failed to fetch thread ${url} after multiple retries.`);
     return null;
   }
 }
@@ -53,7 +61,7 @@ function validateMagnetUri(uri: string): boolean {
  * @returns A Promise resolving to ThreadContent object or null if processing fails.
  */
 export async function processThread(threadUrl: string): Promise<ThreadContent | null> {
-  console.log(`Processing thread: ${threadUrl}`);
+  logger.info(`Processing thread: ${threadUrl}`);
   const html = await fetchHtmlForProcessing(threadUrl);
   if (!html) {
     return null;
@@ -67,10 +75,16 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
   let title = titleElement.text().trim();
   if (!title) {
     // Fallback parsing: Try other common title elements if the main one fails
-    console.warn(`Could not find primary title element for ${threadUrl}. Trying fallback.`);
+    logger.warn(`Could not find primary title element for ${threadUrl}. Trying fallback.`);
     title = $('meta[property="og:title"]').attr('content')?.trim() || $('title').text().trim();
     if (!title) {
-      console.error(`Failed to extract title from ${threadUrl} using fallbacks.`);
+      logger.error(`Failed to extract title from ${threadUrl} using fallbacks.`);
+      logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        message: `Failed to extract title from thread: ${threadUrl}`,
+        url: threadUrl
+      });
       return null;
     }
   }
@@ -86,7 +100,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     // Fallback: Check for meta og:image or a common placeholder
     posterUrl = $('meta[property="og:image"]').attr('content') || '';
     if (!posterUrl) {
-        console.warn(`No specific poster URL found for ${threadUrl}. Using placeholder.`);
+        logger.warn(`No specific poster URL found for ${threadUrl}. Using placeholder.`);
         // Placeholder for missing poster URL
         posterUrl = `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(title || 'No Poster')}`;
     }
@@ -105,7 +119,13 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
       const size = sizeText ? sizeText[0] : '';
       magnets.push({ url: href, name: name, size: size });
     } else if (href) {
-      console.warn(`Invalid magnet URI found: ${href} in thread ${threadUrl}`);
+      logger.warn(`Invalid magnet URI found: ${href} in thread ${threadUrl}`);
+      logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'WARN',
+        message: `Invalid magnet URI detected: ${href}`,
+        url: threadUrl
+      });
     }
   });
 
@@ -115,7 +135,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
   let timestamp = timestampElement.attr('datetime') || new Date().toISOString(); // Default to now
 
   if (!timestamp || isNaN(new Date(timestamp).getTime())) {
-    console.warn(`Could not parse valid timestamp for ${threadUrl}. Using current time.`);
+    logger.warn(`Could not parse valid timestamp for ${threadUrl}. Using current time.`);
     timestamp = new Date().toISOString();
   }
 
@@ -133,6 +153,6 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     originalUrl: threadUrl
   };
 
-  console.log(`Processed thread ${threadUrl}: Title="${processedContent.title}", Magnets: ${processedContent.magnets.length}`);
+  logger.info(`Processed thread ${threadUrl}: Title="${processedContent.title}", Magnets: ${processedContent.magnets.length}`);
   return processedContent;
 }
