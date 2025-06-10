@@ -1,6 +1,6 @@
-// Using require and type assertion for js-levenshtein to bypass stubborn module resolution issues
-// This is a pragmatic solution when standard ES module imports face persistent problems.
-const jaroWinkler = require('js-levenshtein').jaroWinkler as (a: string, b: string) => number;
+// Corrected import strategy for js-levenshtein to address TS2497 and TS2339
+// Importing the default export and then accessing the named function from it.
+import JaroLevenshtein from 'js-levenshtein';
 
 import { logger } from '../utils/logger'; // Import the centralized logger
 
@@ -158,7 +158,7 @@ export function fuzzyMatch(title1: string, title2: string, threshold: number = 0
 
   // jaroWinkler(a, b) returns the distance (0 for identical, 1 for completely different).
   // We need similarity, so 1 - distance.
-  const similarity = 1 - jaroWinkler(normalized1, normalized2);
+  const similarity = 1 - JaroLevenshtein.jaroWinkler(normalized1, normalized2); // Access jaroWinkler from the default import
 
   logger.debug(`Fuzzy matching "${title1}" vs "${title2}": Normalized "${normalized1}" vs "${normalized2}"`);
   logger.debug(`Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
