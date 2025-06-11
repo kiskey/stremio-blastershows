@@ -1,6 +1,7 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio'; // Changed import for Cheerio
-import { ThreadContent, MagnetData } from './engine'; // Import interfaces
+// Import MagnetData and ThreadContent interfaces from engine.ts (single source of truth)
+import { ThreadContent, MagnetData } from './engine';
 // Correct import and initialization for DOMPurify with JSDOM
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
@@ -9,16 +10,8 @@ import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
 import { logger } from '../utils/logger'; // Import the centralized logger
 
-/**
- * Interface for MagnetData as specified in requirements.
- * Updated to include resolution and size for each magnet.
- */
-export interface MagnetData {
-  url: string;
-  name: string; // Full descriptive name from ipsAttachLink_title
-  size?: string;
-  resolution?: string; // Add resolution here
-}
+// Removed duplicate MagnetData interface definition.
+// It is now imported from engine.ts as the single source of truth.
 
 /**
  * Fetches the content of a given URL with error handling and retries.
@@ -236,7 +229,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     title: title,
     posterUrl: posterUrl,
     magnets: magnets,
-    timestamp: timestamp,
+    timestamp: timestamp, // 'timestamp' is correctly declared above with 'let'
     threadId: threadId, // Ensure the correct unique ID is passed
     originalUrl: threadUrl,
     threadStartedTime: threadStartedTime // Added threadStartedTime
