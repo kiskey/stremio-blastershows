@@ -78,7 +78,7 @@ async function fetchHtml(url, retries = 3) {
     logger.error(`Failed to fetch ${url} after multiple retries.`);
     logger.logToRedisErrorQueue({
       timestamp: new Date().toISOString(),
-  level: 'ERROR',
+      level: 'ERROR',
       message: `Failed to fetch URL: ${url}`,
       error: error.message,
       url: url
@@ -316,8 +316,21 @@ async function saveThreadData(data) {
     }
 
     // NEW: Clean the magnet.name to use as the catalog item's originalTitle and streamTitle
-    const cleanedCatalogTitle = cleanStreamFileNameForCatalogTitle(magnet.name || baseDisplayTitle);
+    let cleanedCatalogTitle = cleanStreamFileNameForCatalogTitle(magnet.name || baseDisplayTitle);
     
+    // NEW: Apply resolution postfix to cleanedCatalogTitle
+    const streamResolution = magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : null);
+    if (streamResolution) {
+        const resolutionNum = parseInt(streamResolution, 10);
+        if (streamResolution === '1080p' || streamResolution.toLowerCase() === '4k') { // Consider 4K as HD as well
+            cleanedCatalogTitle += ' - HD';
+        } else if (streamResolution === '720p') {
+            cleanedCatalogTitle += ' - HQ';
+        } else if (resolutionNum <= 480) { // For 480p or lower
+            cleanedCatalogTitle += ' - LQ';
+        }
+    }
+
     // The Stremio ID for this movie (which is an episode)
     const normalizedIdBase = normalizeTitle(cleanedCatalogTitle); // Normalize the new cleaned title for ID
     const stremioMovieId = `tt${normalizedIdBase}-${infoHash}`; // Append infoHash to make it unique per stream/quality
@@ -325,7 +338,7 @@ async function saveThreadData(data) {
     // NEW: Define streamName as "TamilShows - resolution"
     const streamName = `TamilShows - ${magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown Res')}`;
     
-    // NEW: Define streamTitle as the cleaned catalog title
+    // NEW: Define streamTitle as the cleaned catalog title (with resolution postfix)
     const streamTitle = cleanedCatalogTitle;
 
 
@@ -346,7 +359,7 @@ async function saveThreadData(data) {
           infoHash: infoHash, // Store infoHash directly in the movie hash
           sources: JSON.stringify(cachedBestTrackers), // Store trackers directly
           streamName: streamName, // Display name for the stream (e.g., "TamilShows - 1080p")
-          streamTitle: streamTitle, // Detailed title for the stream (e.g., "Cooku With Comali (2025) S06E05")
+          streamTitle: streamTitle, // Detailed title for the stream (e.g., "Cooku With Comali (2025) S06E05 - HD")
           size: magnet.size || (threadSizes.length > 0 ? threadSizes[0] : ''),
           resolution: magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : ''),
           qualityTags: JSON.stringify(threadQualityTags),
