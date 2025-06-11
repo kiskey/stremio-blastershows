@@ -301,7 +301,7 @@ async function saveThreadData(data) {
     }
 
     // Determine current episode number for this magnet, assuming sequential if range is given
-    const currentEpisodeNum = (threadEpisodeStart !== undefined) ? (threadEpisodeStart + i) : 1;
+    let currentEpisodeNum = (threadEpisodeStart !== undefined) ? (threadEpisodeStart + i) : 1;
     // If it's a "season pack" or "complete series" from a single thread, and we have multiple magnets,
     // we assign sequential episode numbers starting from 1 for that season.
     if (!threadEpisodeStart && !threadEpisodeEnd && magnets.length > 1) {
@@ -557,7 +557,7 @@ function startCrawler() {
     logger.info('Scheduled revisit for existing threads triggered.');
     try {
         await revisitExistingThreads();
-    } catch (error) { // Added missing catch block
+    } catch (error) {
         logger.error('Error during scheduled revisit of existing threads:', error);
         logger.logToRedisErrorQueue({
             timestamp: new Date().toISOString(),
@@ -565,7 +565,7 @@ function startCrawler() {
             message: 'Error during scheduled revisit of existing threads',
             error: error.message
         });
-    });
+    } // Corrected: Removed extra closing parenthesis here.
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
 
   // Schedule periodic tracker updates
