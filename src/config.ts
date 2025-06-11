@@ -32,6 +32,8 @@ export interface AppConfig {
   ADDON_NAME: string;
   ADDON_DESCRIPTION: string;
   LOG_LEVEL: LogLevel; // New logging level configuration
+  TRACKER_UPDATE_INTERVAL_HOURS: number; // New: Interval to update tracker list (in hours)
+  NGOSANG_TRACKERS_URL: string; // New: URL for ngosang's best trackers list
 }
 
 /**
@@ -52,6 +54,8 @@ export const config: AppConfig = {
   ADDON_NAME: 'TamilShows Web Series',
   ADDON_DESCRIPTION: 'Auto-updating Tamil web series catalog',
   LOG_LEVEL: LogLevel[process.env.LOG_LEVEL?.toUpperCase() as keyof typeof LogLevel] || LogLevel.INFO, // Default to INFO
+  TRACKER_UPDATE_INTERVAL_HOURS: parseInt(process.env.TRACKER_UPDATE_INTERVAL_HOURS || '6', 10), // Default to 6 hours
+  NGOSANG_TRACKERS_URL: process.env.NGOSANG_TRACKERS_URL || 'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt', // Default URL
 };
 
 // Log the configuration to ensure it's loaded correctly (for debugging)
