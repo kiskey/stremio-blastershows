@@ -37,6 +37,19 @@ interface StremioStream {
 }
 
 /**
+ * Interface for the intermediate stream object used internally for sorting,
+ * which includes the 'resolution' property.
+ */
+interface TempStreamWithResolution {
+  name?: string;
+  title?: string;
+  infoHash: string;
+  sources?: string[];
+  resolution?: string; // This is specifically for internal sorting, not exposed to Stremio
+}
+
+
+/**
  * Maps resolution strings to numerical values for sorting purposes.
  * Higher values represent higher quality.
  * Explicitly allow 'unknown' as a key to handle undefined/unparsed resolutions.
@@ -244,7 +257,7 @@ export async function metaHandler(type: string, id: string): Promise<any> {
       error: (error as Error).message,
       url: id // Using ID as URL context for error logging
     });
-    return { meta: null };
+    return { meta: [] };
   }
 }
 
@@ -266,7 +279,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
     
     // Phase 1: Fetch data and create an intermediate structure that includes resolution for sorting
-    const intermediateStreams = await Promise.all(streamKeys.map(async (key: string) => {
+    const intermediateStreams: (TempStreamWithResolution | null)[] = await Promise.all(streamKeys.map(async (key: string) => {
       const streamData = await redisClient.hgetall(key);
       if (!streamData) {
         logger.warn(`Missing stream data for key: ${key}`);
@@ -284,7 +297,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
       }
 
       // Create an intermediate object including the resolution for sorting
-      const tempStreamWithResolution = {
+      const tempStreamWithResolution: TempStreamWithResolution = {
         name: streamData.name,
         title: streamData.title,
         infoHash: streamData.infoHash,
@@ -302,20 +315,22 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     }));
 
     // Phase 2: Filter out nulls and then sort the valid streams based on resolution
-    const filteredAndSortedStreams = intermediateStreams.filter(Boolean).sort((a: typeof intermediateStreams[number], b: typeof intermediateStreams[number]) => {
+    const filteredAndSortedStreams: TempStreamWithResolution[] = intermediateStreams.filter((s): s is TempStreamWithResolution => s !== null);
+
+    filteredAndSortedStreams.sort((a: TempStreamWithResolution, b: TempStreamWithResolution) => {
       // Use the helper function for safe resolution value retrieval for sorting
-      const resA = getResolutionValue(a?.resolution); // Access resolution directly from the intermediate object
-      const resB = getResolutionValue(b?.resolution); // Access resolution directly from the intermediate object
+      const resA = getResolutionValue(a.resolution); // Access resolution directly from the intermediate object
+      const resB = getResolutionValue(b.resolution); // Access resolution directly from the intermediate object
       
       return resB - resA; // Descending order (higher resolution first)
     });
 
     // Phase 3: Map to the final StremioStream interface, removing the internal 'resolution' field
     const finalStremioStreams: StremioStream[] = filteredAndSortedStreams.map(s => ({
-      name: s?.name,
-      title: s?.title,
-      infoHash: s!.infoHash, // Asserting infoHash will be present after filtering
-      sources: s?.sources,
+      name: s.name,
+      title: s.title,
+      infoHash: s.infoHash, 
+      sources: s.sources,
     }));
 
     logger.info(`Returning ${finalStremioStreams.length} streams for movie ID ${stremioMovieId}.`);
