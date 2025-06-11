@@ -1,8 +1,8 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { config } from '../config';
+import { config } from '../config'; // Import config to access new tracker settings
 import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
-import { processThread } from './processor';
+import { processThread } from './processor'; // Ensure processThread is imported
 import { logger } from '../utils/logger';
 import { normalizeTitle } from '../parser/title'; // Added import for normalizeTitle
 
@@ -33,6 +33,10 @@ export interface ThreadContent {
 // Global variable to hold the current page number for new content crawling
 let currentPage = 1;
 let isCrawling = false; // Flag to prevent multiple concurrent crawls
+
+// Global variables for best trackers caching
+let cachedBestTrackers: string[] = [];
+let lastTrackerUpdate: number = 0; // Timestamp of the last successful update in milliseconds
 
 /**
  * Fetches the content of a given URL.
@@ -144,6 +148,58 @@ function getUniqueThreadId(threadUrl: string): string {
   }
 }
 
+/**
+ * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
+ * This is a helper function to ensure a consistent way to get BTIH from a magnet URI string.
+ * This function is now also present in processor.ts, but kept here for local usage if needed.
+ * @param magnetUri The magnet URI string.
+ * @returns The 40-character BTIH as a string, or null if not found/invalid.
+ */
+function extractBtihFromMagnet(magnetUri: string): string | null {
+  const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return null;
+}
+
+/**
+ * Fetches the best trackers from ngosang's list and caches them.
+ */
+async function fetchAndCacheBestTrackers(): Promise<void> {
+  const now = Date.now();
+  const updateIntervalMs = config.TRACKER_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000;
+
+  if (now - lastTrackerUpdate < updateIntervalMs && cachedBestTrackers.length > 0) {
+    logger.info('Using cached best trackers. Next update scheduled.');
+    return;
+  }
+
+  logger.info('Fetching latest best trackers...');
+  try {
+    const response = await axios.get(config.NGOSANG_TRACKERS_URL);
+    // Trackers are typically newline-separated
+    const rawTrackers = response.data.split('\n').map((t: string) => t.trim()).filter(Boolean);
+
+    // Format them as 'tracker:<URL>' and filter out non-HTTP/UDP ones if strict
+    // For Stremio, 'tracker:<url>' is the required format.
+    const formattedTrackers = rawTrackers.map((tracker: string) => `tracker:${tracker}`);
+    
+    cachedBestTrackers = formattedTrackers;
+    lastTrackerUpdate = now;
+    logger.info(`Successfully fetched and cached ${cachedBestTrackers.length} best trackers.`);
+  } catch (error: any) {
+    logger.error(`Failed to fetch best trackers from ${config.NGOSANG_TRACKERS_URL}:`, error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Failed to fetch best trackers`,
+      error: error.message,
+      url: config.NGOSANG_TRACKERS_URL
+    });
+  }
+}
+
 
 /**
  * Crawls a single forum page to discover new threads.
@@ -219,46 +275,8 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
 }
 
 /**
- * Parses resolution and size from a magnet name/filename.
- * This is now primarily called from processor.ts, but kept here for potential re-use or external calls.
- * @param magnetName The name extracted from the magnet URI's 'dn' parameter or torrent title.
- * @returns An object containing parsed resolution and size, or null if not found.
- */
-function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?: string, size?: string } {
-  const result: { resolution?: string, size?: string } = {};
-
-  // Regex for resolution (e.g., 1080p, 720p, 480p, 4K)
-  const resolutionMatch = magnetName.match(/(\d{3,4}p|4K)/i);
-  if (resolutionMatch) {
-    result.resolution = resolutionMatch[1];
-  }
-
-  // Regex for size (e.g., 7GB, 550MB, 2.4GB)
-  const sizeMatch = magnetName.match(/(\d+\.?\d*\s*[KMGT]?B)/i);
-  if (sizeMatch) {
-    result.size = sizeMatch[1];
-  }
-
-  return result;
-}
-
-
-/**
- * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
- * This is a helper function to ensure a consistent way to get BTIH from a magnet URI string.
- * @param magnetUri The magnet URI string.
- * @returns The 40-character BTIH as a string, or null if not found/invalid.
- */
-function extractBtihFromMagnet(magnetUri: string): string | null {
-  const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
-  if (match && match[1]) {
-    return match[1];
-  }
-  return null;
-}
-
-/**
  * Saves processed thread data into Redis according to the defined schema.
+ * Updated to use infoHash and sources for Stremio stream objects.
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
@@ -312,14 +330,13 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       continue;
     }
 
-    // Extract BTIH for unique key generation
-    const btih = extractBtihFromMagnet(magnet.url);
-    if (!btih) {
+    // Extract BTIH (infoHash) from magnet URI for Stremio stream object
+    const infoHash = extractBtihFromMagnet(magnet.url);
+    if (!infoHash) {
       logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${threadId}.`);
       continue;
     }
 
-    // Now, magnet.name contains the full descriptive title and magnet.resolution is parsed.
     // Format stream.name as "TamilShow - <Resolution>"
     const streamName = `TamilShow - ${magnet.resolution || 'Unknown'}`; 
     // Format stream.title as "Title | resolution | size"
@@ -327,10 +344,11 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
 
     // Episode keys include resolution and the full BTIH for guaranteed uniqueness
     const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount); // Handle multiple magnets for same episode, incrementing if needed
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${btih}`;
+    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${infoHash}`;
 
     await hmset(episodeKey, {
-      magnet: magnet.url,
+      infoHash: infoHash, // Store infoHash instead of full magnet URI
+      sources: JSON.stringify(cachedBestTrackers), // Store cached best trackers as JSON string
       name: streamName, // Formatted as "TamilShow - <Resolution>"
       title: streamTitle, // Formatted as "Title | resolution | size"
       size: magnet.size || '', // Use size parsed in processor.ts
@@ -339,7 +357,7 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       threadUrl: originalUrl,
       stremioMovieId: stremioMovieId
     });
-    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}..., Name: "${streamName}", Title: "${streamTitle}")`);
+    logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}", Title: "${streamTitle}")`);
   }
 
   // Update languages for the movie hash if new languages are found
@@ -447,8 +465,9 @@ export function startCrawler(): void {
   isCrawling = true;
   logger.info('Stremio Addon Crawler started.');
 
-  // Initial crawl on startup
+  // Initial fetch and schedule for best trackers
   (async () => {
+    await fetchAndCacheBestTrackers(); // Fetch trackers on startup
     await crawlNewPages();
     await revisitExistingThreads();
   })();
@@ -464,4 +483,10 @@ export function startCrawler(): void {
     logger.info('Scheduled revisit for existing threads triggered.');
     await revisitExistingThreads();
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000); // Convert hours to milliseconds
+
+  // Schedule periodic tracker updates
+  setInterval(async () => {
+    logger.info('Scheduled best trackers update triggered.');
+    await fetchAndCacheBestTrackers();
+  }, config.TRACKER_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000); // Convert hours to milliseconds
 }
