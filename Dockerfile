@@ -43,4 +43,4 @@ ENV PORT=7000
 
 
 # Command to run the application
-CMD ["node", "src/index.js"] # Point directly to the main JS file inside src/
+CMD node src/index.js
