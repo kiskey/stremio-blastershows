@@ -56,7 +56,8 @@ async function fetchHtml(url, retries = 3) {
         'Accept-Encoding': 'gzip, deflate, br'
       },
       maxRedirects: 10,
-      validateStatus: (status) => status >= 200 && status < 400
+      validateStatus: (status) => status >= 200 && status < 400,
+      timeout: 15000 // Added a 15-second timeout for HTML fetches
     });
 
     if (response.status >= 300 && response.status < 400) {
@@ -138,7 +139,9 @@ async function fetchAndCacheBestTrackers() {
 
   logger.info('Fetching latest best trackers...');
   try {
-    const response = await axios.get(config.NGOSANG_TRACKERS_URL);
+    const response = await axios.get(config.NGOSANG_TRACKERS_URL, {
+        timeout: 15000 // Added a 15-second timeout for tracker fetch
+    });
     const rawTrackers = response.data.split('\n');
 
     const formattedTrackers = rawTrackers
