@@ -1,5 +1,6 @@
-# Stage 1: Build the TypeScript application
-FROM node:20-alpine AS builder # Changed from node:18-alpine to node:20-alpine
+# Stage 1: Build the JavaScript application
+# Using a single stage for plain JavaScript as no compilation is needed.
+FROM node:20-alpine
 
 WORKDIR /app
 
@@ -7,42 +8,23 @@ WORKDIR /app
 COPY package*.json ./
 
 # Update npm to the latest version to avoid potential resolution issues
-# This step should now work with Node.js 20
 RUN npm install -g npm@latest
 
-# Install production dependencies first to leverage Docker layer caching
-RUN npm install --only=production
-# Install dev dependencies for building
-RUN npm install
-
-# Copy the rest of the source code
-COPY . .
-
-# Build the TypeScript application
-RUN npm run build
-
-# Stage 2: Create the thin production image
-FROM node:20-alpine # Changed from node:18-alpine to node:20-alpine
-
-WORKDIR /app
-
-# Update npm in the final stage as well for consistency, though less critical
-RUN npm install -g npm@latest
-
-# Copy only the necessary files from the builder stage
-# Copy package.json to install only production dependencies in the final image
-COPY --from=builder /app/package*.json ./
-# Install only production dependencies
+# Install production dependencies
+# This is typically sufficient for runtime.
 RUN npm install --only=production
 
-# Copy the compiled JavaScript code and the manifest/config files
-COPY --from=builder /app/dist ./dist
-# Copy the .env file (if it's part of your deployment strategy, though often handled externally)
-# It's better to pass environment variables directly when running the container,
-# but for local testing convenience, you might copy a default .env
-# COPY .env ./.env
+# If you have any dev dependencies needed for other scripts (e.g., linting),
+# you might want to install them, but for a pure production runtime image, it's not strictly necessary.
+# RUN npm install
 
-# Expose the port the addon will run on (from config.ts)
+# Copy all application source code
+COPY src ./src
+COPY index.js . # Assuming index.js is directly in the root, or adjust path if it's in src/
+
+# No 'npm run build' step as there's no TypeScript to compile.
+
+# Expose the port the addon will run on (from config.js)
 EXPOSE 7000
 
 # Set environment variables for the application
@@ -57,6 +39,13 @@ ENV PORT=7000
 # ENV THREAD_REVISIT_HOURS=24
 # ENV MAX_CONCURRENCY=8
 # ENV DOMAIN_MONITOR=http://1tamilblasters.net
+# ENV ADDON_ID=community.tamilshows-addon
+# ENV ADDON_NAME="TamilShows Web Series"
+# ENV ADDON_DESCRIPTION="Auto-updating Tamil web series catalog"
+# ENV LOG_LEVEL=INFO
+# ENV TRACKER_UPDATE_INTERVAL_HOURS=6
+# ENV NGOSANG_TRACKERS_URL=https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt
+
 
 # Command to run the application
-CMD ["node", "dist/index.js"]
+CMD ["node", "src/index.js"] # Point directly to the main JS file
