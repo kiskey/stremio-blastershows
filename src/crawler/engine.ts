@@ -320,8 +320,10 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
     }
 
     // Now, magnet.name contains the full descriptive title and magnet.resolution is parsed.
-    const streamName = `Tamilshow-${(magnet.resolution || 'unknown').toLowerCase()}`; // e.g., Tamilshow-1080p
-    const streamTitle = magnet.name; // Use the full descriptive name as the stream title
+    // Format stream.name as "TamilShow - <Resolution>"
+    const streamName = `TamilShow - ${magnet.resolution || 'Unknown'}`; 
+    // Format stream.title as "Title | resolution | size"
+    const streamTitle = `${title} | ${magnet.resolution || 'Unknown'} | ${magnet.size || 'Unknown Size'}`;
 
     // Episode keys include resolution and the full BTIH for guaranteed uniqueness
     const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount); // Handle multiple magnets for same episode, incrementing if needed
@@ -329,15 +331,15 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
 
     await hmset(episodeKey, {
       magnet: magnet.url,
-      name: streamName, // Formatted as Tamilshow-resolution
-      title: streamTitle, // Full descriptive name from processor.ts
+      name: streamName, // Formatted as "TamilShow - <Resolution>"
+      title: streamTitle, // Formatted as "Title | resolution | size"
       size: magnet.size || '', // Use size parsed in processor.ts
       resolution: magnet.resolution || '', // Use resolution parsed in processor.ts
       timestamp: now.toISOString(),
       threadUrl: originalUrl,
       stremioMovieId: stremioMovieId
     });
-    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}..., Resolution: ${magnet.resolution || 'N/A'})`);
+    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}..., Name: "${streamName}", Title: "${streamTitle}")`);
   }
 
   // Update languages for the movie hash if new languages are found
