@@ -38,6 +38,7 @@ interface StremioStream {
 /**
  * Maps resolution strings to numerical values for sorting purposes.
  * Higher values represent higher quality.
+ * Explicitly allow 'unknown' as a key to handle undefined/unparsed resolutions.
  */
 const resolutionOrder: { [key: string]: number } = {
   '4K': 4000,
@@ -49,13 +50,14 @@ const resolutionOrder: { [key: string]: number } = {
 
 /**
  * Helper function to get the numerical value of a resolution for sorting.
- * @param resolution The resolution string (e.g., '1080p', '4K').
+ * This explicitly handles 'undefined' resolution strings, preventing compiler issues.
+ * @param resolution The resolution string (e.g., '1080p', '4K'), or undefined.
  * @returns The numerical value for sorting, or 0 if unknown.
  */
 function getResolutionValue(resolution: string | undefined): number {
-  // Use nullish coalescing to safely default to 'unknown'
-  const key = resolution ?? 'unknown';
-  return resolutionOrder[key] ?? 0; // Return value from map, or 0 if key itself is not in map
+  // Ensure 'keyToUse' is always a string that exists as a key in resolutionOrder
+  const keyToUse: string = (resolution === undefined || !(resolution in resolutionOrder)) ? 'unknown' : resolution;
+  return resolutionOrder[keyToUse]; // Access should now be perfectly safe and type-checked
 }
 
 
