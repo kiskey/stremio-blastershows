@@ -1,12 +1,11 @@
-const { addonBuilder } = require('stremio-addon-sdk'); // Removed serveHTTP as we will manage the app.listen directly
+const express = require('express');
+const cors = require('cors');
 const { config, LogLevel } = require('./config');
 const { logger } = require('./utils/logger');
-const { getManifest } = require('./addon/manifest');
-const { catalogHandler, metaHandler, streamHandler, searchHandler } = require('./addon/handlers');
+const { getManifest } = require('./addon/manifest'); // Directly import manifest
+const { catalogHandler, metaHandler, streamHandler } = require('./addon/handlers'); // Import handlers
 const { startCrawler } = require('./crawler/engine');
 const redisClient = require('./redis');
-const express = require('express');
-const cors = require('cors'); // Import the cors middleware
 
 // Set the logger's level based on config
 logger.setLogLevel(config.LOG_LEVEL);
@@ -18,46 +17,117 @@ const manifest = getManifest();
 const app = express();
 
 // Enable CORS for all routes - IMPORTANT for Stremio to access the addon
-// Apply CORS middleware before any routes are defined
 app.use(cors());
 
-// Initialize the addon builder, passing our Express app to it
-// This tells the SDK to use 'app' as its underlying Express instance for Stremio-specific routes
-const builder = new addonBuilder(manifest, { app: app });
+// Middleware to parse JSON request bodies
+app.use(express.json());
 
-// Define handlers for the addon
-builder.defineCatalogHandler(async (args) => {
-    logger.debug('Handling catalog request...');
-    return catalogHandler(args.type, args.id, args.extra);
-});
+// --- Helper to parse Stremio URL extras (e.g., skip=0/search=query) ---
+// This function will parse path segments like "skip=0" or "search=value"
+function parseStremioExtra(extraPathSegment) {
+    const extra = {};
+    if (extraPathSegment) {
+        extraPathSegment.split('/').forEach(part => {
+            const [key, value] = part.split('=');
+            if (key && value) {
+                extra[key] = decodeURIComponent(value);
+            }
+        });
+    }
+    return extra;
+}
 
-builder.defineMetaHandler(async (args) => {
-    logger.debug('Handling meta request...');
-    return metaHandler(args.type, args.id);
-});
+// --- Standard Stremio Addon Endpoints ---
 
-builder.defineStreamHandler(async (args) => {
-    logger.debug('Handling stream request...');
-    return streamHandler(args.type, args.id);
-});
-
-// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra.
-// No need for a separate defineSearchHandler.
-
-// --- Custom Endpoints (added directly to our Express app) ---
-
-// Explicitly serve the manifest.json
+// 1. Manifest Endpoint
 app.get('/manifest.json', (req, res) => {
     logger.info('Serving manifest.json');
     res.json(manifest);
 });
 
-// Add a basic root route to confirm the server is running
+// 2. Catalog Endpoint (Handles variations for search and skip)
+// General pattern: /catalog/:type/:id/:extraParams?.json
+// :extraParams? is an optional path segment that can contain key=value pairs separated by /
+app.get('/catalog/:type/:id/:extraParams?.json', async (req, res) => {
+    logger.debug(`Handling catalog request for type: ${req.params.type}, id: ${req.params.id}, extraParams: ${req.params.extraParams}`);
+    
+    const { type, id } = req.params;
+    const extra = parseStremioExtra(req.params.extraParams); // Parse search/skip from path
+
+    try {
+        const result = await catalogHandler(type, id, extra);
+        res.json(result);
+    } catch (error) {
+        logger.error(`Error in catalog endpoint for ${id}:`, error);
+        res.status(500).json({ error: 'Internal Server Error', message: error.message });
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error in catalog endpoint for type=${type}, id=${id}`,
+            error: error.message,
+            url: req.originalUrl
+        });
+    }
+});
+
+// 3. Meta Endpoint
+app.get('/meta/:type/:id.json', async (req, res) => {
+    logger.debug(`Handling meta request for type: ${req.params.type}, id: ${req.params.id}`);
+    const { type, id } = req.params;
+
+    try {
+        const result = await metaHandler(type, id);
+        if (!result || !result.meta) {
+            return res.status(404).json({ error: 'Not Found', message: 'Meta item not found.' });
+        }
+        res.json(result);
+    } catch (error) {
+        logger.error(`Error in meta endpoint for ${id}:`, error);
+        res.status(500).json({ error: 'Internal Server Error', message: error.message });
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error in meta endpoint for type=${type}, id=${id}`,
+            error: error.message,
+            url: req.originalUrl
+        });
+    }
+});
+
+// 4. Stream Endpoint
+app.get('/stream/:type/:id.json', async (req, res) => {
+    logger.debug(`Handling stream request for type: ${req.params.type}, id: ${req.params.id}`);
+    const { type, id } = req.params;
+
+    try {
+        // The 'id' for streams is the full episodeKey in this architecture
+        const result = await streamHandler(type, id);
+        if (!result || !result.streams || result.streams.length === 0) {
+            return res.status(404).json({ error: 'Not Found', message: 'Stream not found.' });
+        }
+        res.json(result);
+    } catch (error) {
+        logger.error(`Error in stream endpoint for ${id}:`, error);
+        res.status(500).json({ error: 'Internal Server Error', message: error.message });
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error in stream endpoint for type=${type}, id=${id}`,
+            error: error.message,
+            url: req.originalUrl
+        });
+    }
+});
+
+
+// --- Custom Debug and Root Endpoints ---
+
+// Root route
 app.get('/', (req, res) => {
     res.send(`<h1>${manifest.name} Stremio Addon is running!</h1><p>Visit /manifest.json for the addon manifest.</p><p>Visit /debug/crawl-data for crawl debugging.</p>`);
 });
 
-// Add custom debug endpoint for crawl data
+// Debug endpoint for crawl data
 app.get('/debug/crawl-data', async (req, res) => {
     logger.info('Received debug/crawl-data request.');
     try {
@@ -116,9 +186,9 @@ app.get('/debug/crawl-data', async (req, res) => {
 });
 
 
-// Start the HTTP server for the addon using our custom Express app
+// Start the HTTP server
 app.listen(config.PORT, () => {
     logger.info(`Stremio Addon server running on port ${config.PORT}`);
-    // Start the crawler once the server is listening to ensure Redis is available
+    // Start the crawler once the server is listening
     startCrawler();
 });
