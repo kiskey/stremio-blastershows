@@ -293,7 +293,8 @@ async function saveThreadData(data) {
   // This ID is for the catalog item itself, which groups streams
   const stremioMovieGroupId = `tt${normalizedBaseCatalogId}-${yearNum}-s${seasonNum}`; 
 
-  const movieGroupKey = `movie_group:${stremioMovieGroupId}`; // Redis key for the movie group entry
+  // CHANGED: Using 'movie:' prefix for the catalog item
+  const movieGroupKey = `movie:${stremioMovieGroupId}`; 
 
   try {
     const existingMovieGroupData = await redisClient.hgetall(movieGroupKey);
@@ -326,7 +327,7 @@ async function saveThreadData(data) {
       });
   }
 
-  // --- Process and save each magnet as a distinct "stream_data" entry ---
+  // --- Process and save each magnet as a distinct "stream" entry ---
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
@@ -365,8 +366,9 @@ async function saveThreadData(data) {
     const streamTitle = cleanStreamDetailsTitle(magnet.name || baseDisplayTitle, streamResolution); // Cleaned episode title with quality postfix
 
     // The unique ID for this specific stream, linked to the movie_group ID
-    const streamDataId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
-    const streamDataKey = `stream_data:${streamDataId}`; // Redis key for the individual stream data
+    const streamId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
+    // CHANGED: Using 'stream:' prefix for the individual stream data
+    const streamDataKey = `stream:${streamId}`; 
 
     try {
         await redisClient.hmset(streamDataKey, {
