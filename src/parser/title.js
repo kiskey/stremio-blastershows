@@ -1,5 +1,5 @@
-// Corrected import for jaroWinkler to work reliably with CommonJS environment
-const Levenshtein = require('js-levenshtein'); // Import the entire module
+// Correctly import the jaro-winkler function
+const jaroWinkler = require('jaro-winkler');
 const { logger } = require('../utils/logger');
 
 /**
@@ -20,7 +20,7 @@ const { logger } = require('../utils/logger');
  */
 
 // Regex patterns for extracting various metadata components
-const YEAR_PATTERN = /\(?(\d{4})\)?/; // Matches (YYYY) or YYYY
+const YEAR_PATTERN = /\(?(\d{4})\)?/; // Matches (YYYY) or Wiesbaden
 // More comprehensive season/episode patterns, including ranges and "complete series" / "season pack"
 const SEASON_EPISODE_PATTERN = /(?:S(\d+)(?:E(?:P)?(\d+)(?:-(\d+))?)?|Season\s*(\d+)(?:\s*Episode(?:s)?\s*(\d+)(?:-(\d+))?)?|s(\d+)(?:e(\d+))|complete series|season\s*pack|full\s*season)/i;
 const RESOLUTION_PATTERN = /(\d{3,4}p|4K)/ig; // Global flag to find all
@@ -154,7 +154,7 @@ function parseTitle(titleString) {
 
   // 7. Extract Languages
   const tempExtractedLanguages = extractAndStrip(LANGUAGE_PATTERN, m => {
-    // Split by '+' if found, otherwise just use the matched string
+    // Split by '+' or space, then map to canonical language codes
     const parts = m[0].replace(/[\[\]]/g, '').split(/[+\s]/).filter(Boolean);
     return parts.map(p => LANGUAGE_MAP[p.toLowerCase()] || p.toLowerCase());
   }, false); // Not unique initially for extraction, then flatten and unique
@@ -175,7 +175,7 @@ function parseTitle(titleString) {
                                       .replace(/\s+/g, ' ') // Reduce multiple spaces to single
                                       .trim(); // Trim leading/trailing spaces
   
-  // Reconstruct the `title` field for Stremio display as "Base Title YYYY SXX"
+  // Reconstruct the `title` field for Stremio display as "Base Title (YEAR) SXX"
   let reconstructedTitleParts = [finalCleanedTitle];
   if (metadata.year) {
       reconstructedTitleParts.push(`(${metadata.year})`);
@@ -184,6 +184,7 @@ function parseTitle(titleString) {
       reconstructedTitleParts.push(`S${metadata.season.toString().padStart(2, '0')}`);
   }
   // If it's a specific episode range and not a season pack, append episode range
+  // This part is for the display title, not for the ID.
   if (metadata.episodeStart && metadata.episodeEnd && (metadata.episodeStart !== metadata.episodeEnd)) {
       reconstructedTitleParts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
   } else if (metadata.episodeStart) {
@@ -192,9 +193,10 @@ function parseTitle(titleString) {
 
   metadata.title = reconstructedTitleParts.join(' ').replace(/\s+/g, ' ').trim(); // Final clean-up
 
-  // If after all stripping and reconstruction, the title is empty or just year/season,
-  // revert to a simpler title or use the originalTitle as a fallback.
-  if (!metadata.title || metadata.title.match(/^(\d{4}|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
+  // If after all stripping and reconstruction, the title is empty or just year/season/episode info,
+  // revert to a simpler title by stripping only common meta tags, or use the originalTitle as a fallback.
+  if (!metadata.title || metadata.title.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
+      // Fallback: Strip only common bracketed/parenthesized meta tags and clean spaces
       metadata.title = titleString.replace(/\[.*?\]|\(.*?\)/g, '').replace(/\s+/g, ' ').trim() || titleString;
   }
 
@@ -215,11 +217,11 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
 
   if (!normalized1 || !normalized2) return false;
 
-  // Correctly call jaroWinkler from the imported Levenshtein object
-  const similarity = 1 - Levenshtein.jaroWinkler(normalized1, normalized2); 
+  // Use the jaroWinkler function directly, which returns a similarity score (0 to 1)
+  const similarity = jaroWinkler(normalized1, normalized2); 
 
   logger.debug(`Fuzzy matching "${title1}" vs "${title2}": Normalized "${normalized1}" vs "${normalized2}"`);
-  logger.debug(`Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
+  logger.debug(`Jaro-Winkler Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
 
   return similarity >= threshold;
 }
