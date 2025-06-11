@@ -36,6 +36,30 @@ interface StremioStream {
 }
 
 /**
+ * Maps resolution strings to numerical values for sorting purposes.
+ * Higher values represent higher quality.
+ */
+const resolutionOrder: { [key: string]: number } = {
+  '4K': 4000,
+  '1080p': 1080,
+  '720p': 720,
+  '480p': 480,
+  'unknown': 0 // Default for unknown or undefined resolutions
+};
+
+/**
+ * Helper function to get the numerical value of a resolution for sorting.
+ * @param resolution The resolution string (e.g., '1080p', '4K').
+ * @returns The numerical value for sorting, or 0 if unknown.
+ */
+function getResolutionValue(resolution: string | undefined): number {
+  // Use nullish coalescing to safely default to 'unknown'
+  const key = resolution ?? 'unknown';
+  return resolutionOrder[key] ?? 0; // Return value from map, or 0 if key itself is not in map
+}
+
+
+/**
  * Handles catalog requests from Stremio.
  * This fetches movie/series metadata from Redis to display in the Stremio UI.
  * @param type The type of catalog (e.g., 'series').
@@ -267,13 +291,9 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     }));
 
     const filteredStreams = streams.filter(Boolean).sort((a: StremioStream, b: StremioStream) => { // Explicitly type 'a' and 'b'
-      // Custom sorting for streams: high quality (resolution) to low quality.
-      // Assuming resolutions like 4K, 1080p, 720p, 480p where higher numbers mean higher quality.
-      const resolutionOrder: { [key: string]: number } = { '4K': 4000, '1080p': 1080, '720p': 720, '480p': 480, 'unknown': 0 };
-      
-      // Safely access resolution, defaulting to 'unknown' if undefined
-      const resA = resolutionOrder[a.resolution ?? 'unknown'];
-      const resB = resolutionOrder[b.resolution ?? 'unknown'];
+      // Use the helper function for safe resolution value retrieval
+      const resA = getResolutionValue(a.resolution);
+      const resB = getResolutionValue(b.resolution);
       
       return resB - resA; // Descending order (higher resolution first)
     });
