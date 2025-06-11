@@ -4,7 +4,13 @@ const { config } = require('../config');
 const redisClient = require('../redis'); // Import redisClient instance directly
 const { processThread, getUniqueThreadId } = require('./processor');
 const { logger } = require('../utils/logger');
-const { normalizeTitle, parseTitle, fuzzyMatch, cleanStreamFileNameForCatalogTitle } = require('../parser/title'); // Import fuzzyMatch and the new cleaning function
+const { 
+  normalizeTitle, 
+  parseTitle, 
+  fuzzyMatch, 
+  cleanBaseTitleForCatalog, // New function for catalog name
+  cleanStreamDetailsTitle // Adjusted function for stream title
+} = require('../parser/title');
 
 /**
  * @typedef {object} MagnetData
@@ -243,7 +249,7 @@ async function crawlForumPage(pageNum) {
 
 /**
  * Saves processed thread data into Redis according to the defined schema.
- * IMPORTANT: Now each episode stream will be stored as a distinct "movie" entry.
+ * This function now groups streams under a series-season "movie" entry.
  * @param {ThreadContent} data The processed thread content.
  * @returns {Promise<void>}
  */
@@ -263,7 +269,7 @@ async function saveThreadData(data) {
   // Parse original thread title for detailed metadata
   const parsedThreadTitleMetadata = parseTitle(title);
   const { 
-    title: baseDisplayTitle, // Base title from thread, e.g., "The Flash"
+    title: baseDisplayTitle, // Base title from thread, e.g., "The Flash (2014) S02 EP01-23"
     year: threadYear, 
     season: threadSeason, 
     episodeStart: threadEpisodeStart, 
@@ -280,7 +286,47 @@ async function saveThreadData(data) {
   const yearNum = threadYear || new Date(finalThreadStartedTime).getFullYear(); // Fallback to thread start year if no year parsed
   const seasonNum = threadSeason || 1; // Default to Season 1 if not parsed
 
-  // --- Process and save each magnet as a distinct "movie" (episode) ---
+  // --- Create/Update "Movie Group" Catalog Entry (represents Series-Season) ---
+  // The originalTitle for the catalog item should be "Series Title (Year) SXX"
+  const cleanedBaseCatalogTitle = cleanBaseTitleForCatalog(baseDisplayTitle);
+  const normalizedBaseCatalogId = normalizeTitle(cleanedBaseCatalogTitle);
+  // This ID is for the catalog item itself, which groups streams
+  const stremioMovieGroupId = `tt${normalizedBaseCatalogId}-${yearNum}-s${seasonNum}`; 
+
+  const movieGroupKey = `movie_group:${stremioMovieGroupId}`; // Redis key for the movie group entry
+
+  try {
+    const existingMovieGroupData = await redisClient.hgetall(movieGroupKey);
+    // Only create/update if new or strong fuzzy match for the base title
+    if (!existingMovieGroupData || fuzzyMatch(cleanedBaseCatalogTitle, existingMovieGroupData.originalTitle || '', 0.9)) { 
+        await redisClient.hmset(movieGroupKey, {
+            originalTitle: cleanedBaseCatalogTitle, // The cleaned series-season title
+            posterUrl: posterUrl,
+            stremioId: stremioMovieGroupId, // The ID Stremio will use for meta/stream requests
+            lastUpdated: now.toISOString(),
+            associatedThreadId: data.threadId,
+            threadStartedTime: finalThreadStartedTime,
+            languages: JSON.stringify(threadLanguages),
+            seasons: JSON.stringify([seasonNum]), // Store seasons as array
+        });
+        logger.info(`Created/Updated movie group data for ${movieGroupKey} (ID: ${stremioMovieGroupId}, Title: "${cleanedBaseCatalogTitle}")`);
+    } else {
+        // Just update lastUpdated if not a new entry or significant change
+        await redisClient.hset(movieGroupKey, 'lastUpdated', now.toISOString());
+        logger.info(`Updated existing movie group data timestamp for ${movieGroupKey}.`);
+    }
+  } catch (error) {
+      logger.error(`Error saving movie group data for ${movieGroupKey}:`, error);
+      logger.logToRedisErrorQueue({
+          timestamp: new Date().toISOString(),
+          level: 'ERROR',
+          message: `Error saving movie group data for key: ${movieGroupKey}`,
+          error: error.message,
+          url: originalUrl
+      });
+  }
+
+  // --- Process and save each magnet as a distinct "stream_data" entry ---
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
@@ -302,78 +348,52 @@ async function saveThreadData(data) {
 
     // Determine current episode number for this magnet, assuming sequential if range is given
     let currentEpisodeNum = (threadEpisodeStart !== undefined) ? (threadEpisodeStart + i) : 1;
-    // If it's a "season pack" or "complete series" from a single thread, and we have multiple magnets,
-    // we assign sequential episode numbers starting from 1 for that season.
     if (!threadEpisodeStart && !threadEpisodeEnd && magnets.length > 1) {
-        // This is a fallback if no episode numbers were parsed but there are multiple magnets.
-        // We'll treat them as sequential episodes for the given season.
-        const epMatch = magnet.name?.match(/e(\d+)/i); // Try to get episode from magnet name as a last resort
+        const epMatch = magnet.name?.match(/e(\d+)/i);
         if (epMatch) {
             currentEpisodeNum = parseInt(epMatch[1], 10);
         } else {
-            currentEpisodeNum = i + 1; // Fallback to simple increment
+            currentEpisodeNum = i + 1;
         }
     }
-
-    // NEW: Clean the magnet.name to use as the catalog item's originalTitle and streamTitle
-    let cleanedCatalogTitle = cleanStreamFileNameForCatalogTitle(magnet.name || baseDisplayTitle);
     
-    // NEW: Apply resolution postfix to cleanedCatalogTitle
-    const streamResolution = magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : null);
-    if (streamResolution) {
-        const resolutionNum = parseInt(streamResolution, 10);
-        if (streamResolution === '1080p' || streamResolution.toLowerCase() === '4k') { // Consider 4K as HD as well
-            cleanedCatalogTitle += ' - HD';
-        } else if (streamResolution === '720p') {
-            cleanedCatalogTitle += ' - HQ';
-        } else if (resolutionNum <= 480) { // For 480p or lower
-            cleanedCatalogTitle += ' - LQ';
-        }
-    }
+    // Determine the resolution for this specific stream
+    const streamResolution = magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown');
 
-    // The Stremio ID for this movie (which is an episode)
-    const normalizedIdBase = normalizeTitle(cleanedCatalogTitle); // Normalize the new cleaned title for ID
-    const stremioMovieId = `tt${normalizedIdBase}-${infoHash}`; // Append infoHash to make it unique per stream/quality
+    // Generate streamName and streamTitle using the specific cleaning functions
+    const streamName = `TamilShows - ${streamResolution}`; // "TamilShows - resolution"
+    const streamTitle = cleanStreamDetailsTitle(magnet.name || baseDisplayTitle, streamResolution); // Cleaned episode title with quality postfix
 
-    // NEW: Define streamName as "TamilShows - resolution"
-    const streamName = `TamilShows - ${magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown Res')}`;
-    
-    // NEW: Define streamTitle as the cleaned catalog title (with resolution postfix)
-    const streamTitle = cleanedCatalogTitle;
-
-
-    const movieKey = `movie:${stremioMovieId}`; // The Redis key for this episode "movie"
+    // The unique ID for this specific stream, linked to the movie_group ID
+    const streamDataId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
+    const streamDataKey = `stream_data:${streamDataId}`; // Redis key for the individual stream data
 
     try {
-        await redisClient.hmset(movieKey, {
-          originalTitle: cleanedCatalogTitle, // Use the newly cleaned title for catalog display
-          posterUrl: posterUrl,
-          stremioId: stremioMovieId, // The unique ID for this episode "movie"
-          lastUpdated: now.toISOString(),
-          associatedThreadId: data.threadId,
-          threadStartedTime: finalThreadStartedTime,
-          languages: JSON.stringify(threadLanguages), 
-          seasons: JSON.stringify([seasonNum]), // Still store season info for filtering/sorting
-          episodeNumber: currentEpisodeNum.toString(),
-          seasonNumber: seasonNum.toString(),
-          infoHash: infoHash, // Store infoHash directly in the movie hash
-          sources: JSON.stringify(cachedBestTrackers), // Store trackers directly
-          streamName: streamName, // Display name for the stream (e.g., "TamilShows - 1080p")
-          streamTitle: streamTitle, // Detailed title for the stream (e.g., "Cooku With Comali (2025) S06E05 - HD")
+        await redisClient.hmset(streamDataKey, {
+          parentMovieId: stremioMovieGroupId, // Link back to parent movie group ID
+          infoHash: infoHash,
+          sources: JSON.stringify(cachedBestTrackers),
+          name: streamName, // "TamilShows - 1080p"
+          title: streamTitle, // "Suits LA (2025) S01 EP11 - LQ"
           size: magnet.size || (threadSizes.length > 0 ? threadSizes[0] : ''),
-          resolution: magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : ''),
+          resolution: streamResolution,
+          timestamp: now.toISOString(),
+          threadUrl: originalUrl,
+          languages: JSON.stringify(threadLanguages),
           qualityTags: JSON.stringify(threadQualityTags),
           codecs: JSON.stringify(threadCodecs),
           audioCodecs: JSON.stringify(threadAudioCodecs),
           hasESub: threadHasESub ? 'true' : 'false',
+          episodeNumber: currentEpisodeNum.toString(),
+          seasonNumber: seasonNum.toString(),
         });
-        logger.info(`Saved NEW movie (episode) data for ${movieKey} (ID: ${stremioMovieId}, Title: "${cleanedCatalogTitle}")`);
+        logger.info(`Saved stream data for ${streamDataKey} (Parent ID: ${stremioMovieGroupId}, Stream Title: "${streamTitle}")`);
     } catch (error) {
-        logger.error(`Error saving movie (episode) data for ${movieKey}:`, error);
+        logger.error(`Error saving stream data for ${streamDataKey}:`, error);
         logger.logToRedisErrorQueue({
             timestamp: new Date().toISOString(),
             level: 'ERROR',
-            message: `Error saving movie (episode) data for key: ${movieKey}`,
+            message: `Error saving stream data for key: ${streamDataKey}`,
             error: error.message,
             url: originalUrl
         });
