@@ -2,6 +2,7 @@ const { config } = require('../config');
 
 /**
  * Returns the Stremio Addon Manifest.
+ * This function consolidates the manifest data defined in the requirements.
  * @returns {object} The Stremio addon manifest object.
  */
 function getManifest() {
