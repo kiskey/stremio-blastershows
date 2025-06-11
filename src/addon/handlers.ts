@@ -55,8 +55,14 @@ const resolutionOrder: { [key: string]: number } = {
  * @returns The numerical value for sorting, or 0 if unknown.
  */
 function getResolutionValue(resolution: string | undefined): number {
-  // Ensure 'keyToUse' is always a string that exists as a key in resolutionOrder
-  const keyToUse: string = (resolution === undefined || !(resolution in resolutionOrder)) ? 'unknown' : resolution;
+  let keyToUse: string;
+  // Explicitly check if resolution is a string and if it exists as a key in resolutionOrder.
+  // This makes the type narrowing unambiguous for the compiler.
+  if (typeof resolution === 'string' && Object.prototype.hasOwnProperty.call(resolutionOrder, resolution)) {
+    keyToUse = resolution;
+  } else {
+    keyToUse = 'unknown';
+  }
   return resolutionOrder[keyToUse]; // Access should now be perfectly safe and type-checked
 }
 
