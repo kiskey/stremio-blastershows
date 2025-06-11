@@ -171,7 +171,10 @@ async function crawlForumPage(pageNum) {
   logger.info(`Crawling forum page: ${url}`);
 
   const html = await fetchHtml(url);
-  if (!html) {
+  // Added log to confirm HTML fetch result
+  if (html) {
+    logger.info(`Successfully fetched HTML for page ${pageNum}.`);
+  } else {
     logger.warn(`Could not fetch HTML for page ${pageNum}. Assuming end of pagination.`);
     return false;
   }
@@ -598,11 +601,22 @@ function startCrawler() {
   (async () => {
     try {
         if (config.PURGE_ON_START) { // Only purge if PURGE_ON_START is true
-            await redisClient.purgeRedis(); // Assuming purgeRedis is still exported directly from redis.js
+            logger.info('Initiating Redis purge...');
+            await redisClient.purgeRedis();
+            logger.info('Redis purge completed.');
         }
+        logger.info('Starting initial fetch and cache of best trackers...');
         await fetchAndCacheBestTrackers();
+        logger.info('Initial fetch and cache of best trackers completed.');
+
+        logger.info('Starting initial new page crawl...');
         await crawlNewPages();
+        logger.info('Initial new page crawl completed.');
+
+        logger.info('Starting initial revisit of existing threads...');
         await revisitExistingThreads();
+        logger.info('Initial revisit of existing threads completed.');
+
     } catch (error) {
         logger.error('Error during initial crawler startup:', error);
         logger.logToRedisErrorQueue({
