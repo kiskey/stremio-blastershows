@@ -1,5 +1,8 @@
-const { jaroWinkler } = require('js-levenshtein');
-const { logger } = require('../utils/logger');
+// Reverted to named import, relying on src/js-levenshtein.d.ts to provide the correct types.
+// Corrected import for jaroWinkler to work with CommonJS export patterns
+const levenshtein = require('js-levenshtein'); // Import the entire module
+
+const { logger } = require('../utils/logger'); // Import the centralized logger
 
 /**
  * @typedef {object} ParsedTitleMetadata
@@ -25,7 +28,7 @@ const RESOLUTION_PATTERN = /(\d{3,4}p|4K)/ig; // Global flag to find all
 const QUALITY_TAGS_PATTERN = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip)/ig; // More specific quality tags
 const CODEC_PATTERN = /(x264|x265|HEVC|AVC)/ig;
 const AUDIO_CODEC_PATTERN = /(AAC|DD5\.1|AC3|DTS)/ig;
-const LANGUAGE_PATTERN = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por)\s*[+\s]*)+\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por))/ig; // Matches languages in brackets or short codes
+const LANGUAGE_PATTERN = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por)\s*[+\s]*)+\s*\]|(?:tam|tel|kan|hin|eng|kor|chi|por))/ig; // Matches languages in brackets or short codes
 const SIZE_PATTERN = /(\d+\.?\d*\s*[KMGT]?B)/ig; // Matches sizes like 1.2GB, 600MB
 const SUBTITLE_PATTERN = /(ESub|Subtitles?)/i;
 
@@ -207,7 +210,8 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
 
   if (!normalized1 || !normalized2) return false;
 
-  const similarity = 1 - jaroWinkler(normalized1, normalized2);
+  // Correctly call jaroWinkler as a method of the imported levenshtein object
+  const similarity = 1 - levenshtein.jaroWinkler(normalized1, normalized2); 
 
   logger.debug(`Fuzzy matching "${title1}" vs "${title2}": Normalized "${normalized1}" vs "${normalized2}"`);
   logger.debug(`Similarity: ${similarity.toFixed(4)} (Threshold: ${threshold})`);
