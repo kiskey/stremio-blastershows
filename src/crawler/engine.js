@@ -363,7 +363,8 @@ async function saveThreadData(data) {
     const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
     // Ensure seasonNum is added to existing seasons and sort
     const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-    await redisClient.hset(movieKey, 'seasons', mergedSeasons.join(','));
+    // Store as a JSON string representing an array
+    await redisClient.hset(movieKey, 'seasons', JSON.stringify(mergedSeasons));
   } catch (error) {
     logger.error(`Error updating seasons for movie ${movieKey}:`, error);
     logger.logToRedisErrorQueue({
