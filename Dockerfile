@@ -14,13 +14,8 @@ RUN npm install -g npm@latest
 # This is typically sufficient for runtime.
 RUN npm install --only=production
 
-# If you have any dev dependencies needed for other scripts (e.g., linting),
-# you might want to install them, but for a pure production runtime image, it's not strictly necessary.
-# RUN npm install
-
-# Copy all application source code
+# Copy all application source code from src/ to /app/src
 COPY src ./src
-COPY index.js . 
 
 # No 'npm run build' step as there's no TypeScript to compile.
 
@@ -48,4 +43,4 @@ ENV PORT=7000
 
 
 # Command to run the application
-CMD ["node", "src/index.js"]
+CMD ["node", "src/index.js"] # Point directly to the main JS file inside src/
