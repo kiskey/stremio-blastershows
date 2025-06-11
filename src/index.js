@@ -1,11 +1,11 @@
-const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
+const { addonBuilder } = require('stremio-addon-sdk'); // Removed serveHTTP as we will manage the app.listen directly
 const { config, LogLevel } = require('./config');
 const { logger } = require('./utils/logger');
 const { getManifest } = require('./addon/manifest');
 const { catalogHandler, metaHandler, streamHandler, searchHandler } = require('./addon/handlers');
 const { startCrawler } = require('./crawler/engine');
 const redisClient = require('./redis');
-const express = require('express'); // Still needed if you use express-specific features or middlewares
+const express = require('express');
 const cors = require('cors'); // Import the cors middleware
 
 // Set the logger's level based on config
@@ -14,8 +14,16 @@ logger.setLogLevel(config.LOG_LEVEL);
 // Get the addon manifest
 const manifest = getManifest();
 
-// Initialize the addon builder. The SDK will create its own Express app internally.
-const builder = new addonBuilder(manifest);
+// Create our own Express app instance
+const app = express();
+
+// Enable CORS for all routes - IMPORTANT for Stremio to access the addon
+// Apply CORS middleware before any routes are defined
+app.use(cors());
+
+// Initialize the addon builder, passing our Express app to it
+// This tells the SDK to use 'app' as its underlying Express instance for Stremio-specific routes
+const builder = new addonBuilder(manifest, { app: app });
 
 // Define handlers for the addon
 builder.defineCatalogHandler(async (args) => {
@@ -33,16 +41,12 @@ builder.defineStreamHandler(async (args) => {
     return streamHandler(args.type, args.id);
 });
 
-// --- Start the HTTP server for the addon and get the Express app instance ---
-// serveHTTP internally creates and manages the Express app for Stremio endpoints
-const app = serveHTTP(builder, { port: config.PORT });
+// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra.
+// No need for a separate defineSearchHandler.
 
-// Enable CORS for all routes on the SDK's managed Express app
-app.use(cors());
+// --- Custom Endpoints (added directly to our Express app) ---
 
-// --- Custom Endpoints (added to the SDK's Express app) ---
-
-// Explicitly serve the manifest.json (optional, SDK usually does this, but for explicit control)
+// Explicitly serve the manifest.json
 app.get('/manifest.json', (req, res) => {
     logger.info('Serving manifest.json');
     res.json(manifest);
@@ -112,6 +116,9 @@ app.get('/debug/crawl-data', async (req, res) => {
 });
 
 
-// Start the crawler once the server is listening
-// The app.listen is implicitly handled by serveHTTP, so we can just call startCrawler directly
-startCrawler();
+// Start the HTTP server for the addon using our custom Express app
+app.listen(config.PORT, () => {
+    logger.info(`Stremio Addon server running on port ${config.PORT}`);
+    // Start the crawler once the server is listening to ensure Redis is available
+    startCrawler();
+});
