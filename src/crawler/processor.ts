@@ -10,6 +10,17 @@ import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Imp
 import { logger } from '../utils/logger'; // Import the centralized logger
 
 /**
+ * Interface for MagnetData as specified in requirements.
+ * Updated to include resolution and size for each magnet.
+ */
+export interface MagnetData {
+  url: string;
+  name: string; // Full descriptive name from ipsAttachLink_title
+  size?: string;
+  resolution?: string; // Add resolution here
+}
+
+/**
  * Fetches the content of a given URL with error handling and retries.
  * @param url The URL to fetch.
  * @param retries Remaining retries.
@@ -80,6 +91,30 @@ function getUniqueThreadId(threadUrl: string): string {
   }
 }
 
+/**
+ * Parses resolution and size from a magnet name/filename.
+ * Example magnet name: "Cooku With Comali (2025) S06E01 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC - 7GB].mkv"
+ * @param magnetName The name extracted from the magnet URI's 'dn' parameter or torrent title.
+ * @returns An object containing parsed resolution and size, or null if not found.
+ */
+function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?: string, size?: string } {
+  const result: { resolution?: string, size?: string } = {};
+
+  // Regex for resolution (e.g., 1080p, 720p, 480p, 4K)
+  const resolutionMatch = magnetName.match(/(\d{3,4}p|4K)/i);
+  if (resolutionMatch) {
+    result.resolution = resolutionMatch[1];
+  }
+
+  // Regex for size (e.g., 7GB, 550MB, 2.4GB)
+  const sizeMatch = magnetName.match(/(\d+\.?\d*\s*[KMGT]?B)/i);
+  if (sizeMatch) {
+    result.size = sizeMatch[1];
+  }
+
+  return result;
+}
+
 
 /**
  * Processes a single forum thread page to extract relevant content.
@@ -137,29 +172,6 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     }
   }
 
-  // Extract magnets: <a class="magnet-plugin"> elements
-  const magnets: MagnetData[] = [];
-  $('a.magnet-plugin').each((index, element) => {
-    const href = $(element).attr('href');
-    if (href && validateMagnetUri(href)) {
-      // Extract name from the link text or title attribute
-      const name = $(element).text().trim() || $(element).attr('title')?.trim() || 'Unknown Magnet';
-      // Size is usually part of the link text or sibling elements, requires more specific parsing
-      // For now, we'll try to guess size from nearby text or leave it empty.
-      const sizeText = $(element).closest('p, div, li').text().match(/(\d+\.?\d*\s*[KMGT]?B)/i);
-      const size = sizeText ? sizeText[0] : '';
-      magnets.push({ url: href, name: name, size: size });
-    } else if (href) {
-      logger.warn(`Invalid magnet URI found: ${href} in thread ${threadUrl}`);
-      logger.logToRedisErrorQueue({
-        timestamp: new Date().toISOString(),
-        level: 'WARN',
-        message: `Invalid magnet URI detected: ${href}`,
-        url: threadUrl
-      });
-    }
-  });
-
   // Extract threadStartedTime: from <time datetime="ISO8601"> within <span class="ipsType_light">
   const threadStartedTimeElement = $('span.ipsType_light time').first();
   let threadStartedTime = threadStartedTimeElement.attr('datetime') || new Date().toISOString();
@@ -169,19 +181,56 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     threadStartedTime = new Date().toISOString();
   }
 
-
-  // Extract timestamp: Last modified time
-  // This often requires specific parsing of a timestamp element, e.g., <time datetime="ISO8601">
-  const timestampElement = $('time.ipsType_reset').first(); // Common timestamp element
-  let timestamp = timestampElement.attr('datetime') || new Date().toISOString(); // Default to now
-
-  if (!timestamp || isNaN(new Date(timestamp).getTime())) {
-    logger.warn(`Could not parse valid timestamp for ${threadUrl}. Using current time.`);
-    timestamp = new Date().toISOString();
-  }
-
   // Generate a unique thread ID using the robust function
   const threadId = getUniqueThreadId(threadUrl);
+
+  // --- NEW MAGNET EXTRACTION LOGIC ---
+  const magnets: MagnetData[] = [];
+  // Find all elements that are immediately followed by a magnet-plugin link,
+  // and contain the ipsAttachLink_title for the descriptive name.
+  // This assumes the structure: ipsAttachLink_block (with title) -> magnet-plugin link
+  
+  // Find all 'a.ipsAttachLink_block' elements which contain the descriptive titles
+  $('a.ipsAttachLink_block').each((index, titleLinkElement) => {
+      const descriptiveTitle = $(titleLinkElement).find('span.ipsAttachLink_title').text().trim();
+      
+      // Find the next sibling that is a 'magnet-plugin' link
+      const magnetLinkElement = $(titleLinkElement).nextAll('a.magnet-plugin').first();
+
+      const magnetUrl = magnetLinkElement.attr('href');
+
+      if (magnetUrl && validateMagnetUri(magnetUrl) && descriptiveTitle) {
+          const { resolution, size } = parseResolutionAndSizeFromMagnetName(descriptiveTitle);
+          magnets.push({
+              url: magnetUrl,
+              name: descriptiveTitle, // Use the descriptive title from ipsAttachLink_title
+              size: size,
+              resolution: resolution
+          });
+      } else if (magnetUrl) {
+          logger.warn(`Invalid magnet URI or missing descriptive title for ${magnetUrl} in thread ${threadUrl}`);
+          logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'WARN',
+            message: `Invalid magnet URI or missing title detected: ${magnetUrl}`,
+            url: threadUrl
+          });
+      }
+  });
+
+  // Fallback: If no magnets found by pairing, try to find standalone magnet links
+  // (though the primary goal is paired extraction)
+  if (magnets.length === 0) {
+      $('a.magnet-plugin').each((index, element) => {
+          const href = $(element).attr('href');
+          if (href && validateMagnetUri(href)) {
+              const name = $(element).text().trim() || $(element).attr('title')?.trim() || 'Unknown Magnet';
+              const { resolution, size } = parseResolutionAndSizeFromMagnetName(name);
+              magnets.push({ url: href, name: name, size: size, resolution: resolution });
+          }
+      });
+  }
+
 
   const processedContent: ThreadContent = {
     title: title,
