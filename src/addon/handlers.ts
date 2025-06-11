@@ -2,7 +2,7 @@ import redisClient from '../../src/redis'; // Direct import of the default expor
 import { config } from '../../src/config';
 import { logger } from '../../src/utils/logger';
 import { normalizeTitle } from '../../src/parser/title'; // Import normalizeTitle
-import { fuzzyMatch } from '../../src/parser/title'; // Import fuzzyMatch
+import { fuzzyMatch } from '../..///src/parser/title'; // Import fuzzyMatch
 import { parseTitle } from '../../src/parser/title'; // Import parseTitle
 
 // In-memory cache for meta items to reduce Redis lookups
@@ -320,6 +320,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     }));
 
     // Phase 2: Filter out nulls and then sort the valid streams directly by score
+    // Explicitly assert the type after filtering to guarantee it for the sort function
     const filteredAndSortedStreams: TempStreamWithResolution[] = intermediateStreams.filter((s): s is TempStreamWithResolution => s !== null);
 
     filteredAndSortedStreams.sort((a: TempStreamWithResolution, b: TempStreamWithResolution) => {
