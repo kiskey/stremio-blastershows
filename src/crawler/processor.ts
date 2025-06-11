@@ -10,6 +10,9 @@ import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
 import { logger } from '../utils/logger'; // Import the centralized logger
 
+// Removed duplicate MagnetData interface definition.
+// It is now imported from engine.ts as the single source of truth.
+
 /**
  * Fetches the content of a given URL with error handling and retries.
  * @param url The URL to fetch.
@@ -211,26 +214,10 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
   // --- REVISED MAGNET EXTRACTION LOGIC ---
   const magnets: MagnetData[] = [];
   
-  // Create a map to store descriptive titles found from ipsAttachLink_block elements
-  // Key: The text content of the ipsAttachLink_title, Value: The descriptive text itself.
-  // This allows us to look up the descriptive title when we encounter a magnet link.
-  const descriptiveTitlesMap = new Map<string, string>();
-  $('a.ipsAttachLink_block').each((_index, titleLinkElement) => {
-      const titleText = $(titleLinkElement).find('span.ipsAttachLink_title').text().trim();
-      if (titleText) {
-          // Use the clean title text as a key for fuzzy matching later if needed,
-          // but for direct pairing, a direct match is ideal.
-          descriptiveTitlesMap.set(titleText, titleText);
-      }
-  });
-
-  // Now iterate over all magnet-plugin links
+  // Iterate over all magnet-plugin links
   $('a.magnet-plugin').each((_index, magnetLinkElement) => {
       const magnetUrl = $(magnetLinkElement).attr('href');
       if (magnetUrl && validateMagnetUri(magnetUrl)) {
-          // Attempt to find the descriptive title from a *preceding* ipsAttachLink_title.
-          // We'll traverse backwards up the DOM tree from the magnet link's parent
-          // to find a preceding ipsAttachLink_block.
           let descriptiveName: string | null = null;
           
           // Try to find the closest preceding ipsAttachLink_block sibling
