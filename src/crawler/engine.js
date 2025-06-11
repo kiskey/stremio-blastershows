@@ -4,7 +4,7 @@ const { config } = require('../config');
 const redisClient = require('../redis'); // Import redisClient instance directly
 const { processThread, getUniqueThreadId } = require('./processor');
 const { logger } = require('../utils/logger');
-const { normalizeTitle, parseTitle, fuzzyMatch } = require('../parser/title'); // Import fuzzyMatch
+const { normalizeTitle, parseTitle, fuzzyMatch, cleanStreamFileNameForCatalogTitle } = require('../parser/title'); // Import fuzzyMatch and the new cleaning function
 
 /**
  * @typedef {object} MagnetData
@@ -78,7 +78,7 @@ async function fetchHtml(url, retries = 3) {
     logger.error(`Failed to fetch ${url} after multiple retries.`);
     logger.logToRedisErrorQueue({
       timestamp: new Date().toISOString(),
-      level: 'ERROR',
+  level: 'ERROR',
       message: `Failed to fetch URL: ${url}`,
       error: error.message,
       url: url
@@ -315,43 +315,25 @@ async function saveThreadData(data) {
         }
     }
 
-
-    // Reconstruct the `title` for this specific episode/stream for display in Stremio
-    const episodeDisplayTitle = `${baseDisplayTitle} S${seasonNum.toString().padStart(2, '0')}EP${currentEpisodeNum.toString().padStart(2, '0')}`;
-    const normalizedEpisodeId = normalizeTitle(episodeDisplayTitle);
+    // NEW: Clean the magnet.name to use as the catalog item's originalTitle and streamTitle
+    const cleanedCatalogTitle = cleanStreamFileNameForCatalogTitle(magnet.name || baseDisplayTitle);
     
     // The Stremio ID for this movie (which is an episode)
-    const stremioMovieId = `tt${normalizedEpisodeId}-${infoHash}`; // Append infoHash to make it unique per stream/quality
+    const normalizedIdBase = normalizeTitle(cleanedCatalogTitle); // Normalize the new cleaned title for ID
+    const stremioMovieId = `tt${normalizedIdBase}-${infoHash}`; // Append infoHash to make it unique per stream/quality
 
-    // For streams, enrich the name/title using parsed metadata
-    const streamNameParts = [
-      magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown Res'),
-      magnet.name || baseDisplayTitle,
-      (threadQualityTags.length > 0 ? threadQualityTags.join(', ') : null),
-      (threadCodecs.length > 0 ? threadCodecs.join(',') : null),
-      (threadAudioCodecs.length > 0 ? threadAudioCodecs.join(',') : null),
-      (threadHasESub ? 'ESub' : null),
-    ].filter(Boolean);
-    const streamName = `TamilShow - ${streamNameParts.join(' - ')}`;
+    // NEW: Define streamName as "TamilShows - resolution"
+    const streamName = `TamilShows - ${magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown Res')}`;
+    
+    // NEW: Define streamTitle as the cleaned catalog title
+    const streamTitle = cleanedCatalogTitle;
 
-    // The stream title can be more descriptive
-    const streamTitleParts = [
-        `S${seasonNum}E${currentEpisodeNum}`,
-        `${magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown Res')}`,
-        `${magnet.size || (threadSizes.length > 0 ? threadSizes[0] : 'Unknown Size')}`,
-        (threadLanguages.length > 0 ? threadLanguages.join('/') : null),
-        (threadQualityTags.length > 0 ? threadQualityTags.join(' ') : null),
-        (threadCodecs.length > 0 ? threadCodecs.join(' ') : null),
-        (threadAudioCodecs.length > 0 ? threadAudioCodecs.join(' ') : null),
-        (threadHasESub ? 'ESub' : null),
-    ].filter(Boolean);
-    const streamTitle = `${baseDisplayTitle} - ${streamTitleParts.join(' | ')}`;
 
     const movieKey = `movie:${stremioMovieId}`; // The Redis key for this episode "movie"
 
     try {
         await redisClient.hmset(movieKey, {
-          originalTitle: episodeDisplayTitle, // The full display title for the episode
+          originalTitle: cleanedCatalogTitle, // Use the newly cleaned title for catalog display
           posterUrl: posterUrl,
           stremioId: stremioMovieId, // The unique ID for this episode "movie"
           lastUpdated: now.toISOString(),
@@ -363,8 +345,8 @@ async function saveThreadData(data) {
           seasonNumber: seasonNum.toString(),
           infoHash: infoHash, // Store infoHash directly in the movie hash
           sources: JSON.stringify(cachedBestTrackers), // Store trackers directly
-          streamName: streamName, // Display name for the stream
-          streamTitle: streamTitle, // Detailed title for the stream
+          streamName: streamName, // Display name for the stream (e.g., "TamilShows - 1080p")
+          streamTitle: streamTitle, // Detailed title for the stream (e.g., "Cooku With Comali (2025) S06E05")
           size: magnet.size || (threadSizes.length > 0 ? threadSizes[0] : ''),
           resolution: magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : ''),
           qualityTags: JSON.stringify(threadQualityTags),
@@ -372,7 +354,7 @@ async function saveThreadData(data) {
           audioCodecs: JSON.stringify(threadAudioCodecs),
           hasESub: threadHasESub ? 'true' : 'false',
         });
-        logger.info(`Saved NEW movie (episode) data for ${movieKey} (ID: ${stremioMovieId}, Title: "${episodeDisplayTitle}")`);
+        logger.info(`Saved NEW movie (episode) data for ${movieKey} (ID: ${stremioMovieId}, Title: "${cleanedCatalogTitle}")`);
     } catch (error) {
         logger.error(`Error saving movie (episode) data for ${movieKey}:`, error);
         logger.logToRedisErrorQueue({
@@ -565,7 +547,7 @@ function startCrawler() {
             message: 'Error during scheduled revisit of existing threads',
             error: error.message
         });
-    } // Corrected: Removed extra closing parenthesis here.
+    }
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
 
   // Schedule periodic tracker updates
