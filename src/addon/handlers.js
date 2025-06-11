@@ -71,6 +71,26 @@ async function catalogHandler(type, id, extra) {
           return null;
         }
 
+        let genres = [];
+        if (movieData.languages) {
+            try {
+                genres = JSON.parse(movieData.languages);
+                if (!Array.isArray(genres)) {
+                    logger.warn(`Parsed genres for key ${key} is not an array. Resetting to empty array.`);
+                    genres = [];
+                }
+            } catch (e) {
+                logger.error(`Failed to parse languages JSON for key ${key} in catalogHandler:`, e);
+                logger.logToRedisErrorQueue({
+                    timestamp: new Date().toISOString(),
+                    level: 'ERROR',
+                    message: `Failed to parse languages JSON for key: ${key} in catalogHandler`,
+                    error: e.message
+                });
+                genres = []; // Reset to empty array on parsing error
+            }
+        }
+
         const meta = {
           id: movieData.stremioId, // This is now the unique ID for each episode/stream
           type: 'movie', // Content type is "movie"
@@ -81,7 +101,7 @@ async function catalogHandler(type, id, extra) {
           description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
           releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
           imdbRating: 'N/A',
-          genres: movieData.languages ? JSON.parse(movieData.languages) : [],
+          genres: genres, // Use the safely parsed genres
           // 'videos' property is not applicable for 'movie' type and should be omitted or empty
         };
         
@@ -102,7 +122,7 @@ async function catalogHandler(type, id, extra) {
     // Sort the metas by last updated timestamp for fresh content first
     const filteredMetas = metas.filter(Boolean).sort((a, b) => {
       const dateA = new Date(metaCache.get(a.id)?.lastUpdated || 0).getTime();
-      const dateB = new Date(metaCache.get(b.id)?.lastUpdated || 0).getTime();
+      const dateB = new Date(b.lastUpdated || 0).getTime(); // Ensure 'b' has lastUpdated if available
       return dateB - dateA;
     });
 
@@ -149,6 +169,27 @@ async function metaHandler(type, id) {
       return { meta: null };
     }
 
+    let genres = [];
+    if (movieData.languages) {
+        try {
+            genres = JSON.parse(movieData.languages);
+            if (!Array.isArray(genres)) {
+                logger.warn(`Parsed genres for ID ${id} is not an array. Resetting to empty array.`);
+                genres = [];
+            }
+        } catch (e) {
+            logger.error(`Failed to parse languages JSON for ID ${id} in metaHandler:`, e);
+            logger.logToRedisErrorQueue({
+                timestamp: new Date().toISOString(),
+                level: 'ERROR',
+                message: `Failed to parse languages JSON for ID: ${id} in metaHandler`,
+                error: e.message
+            });
+            genres = []; // Reset to empty array on parsing error
+        }
+        
+    }
+
     const meta = {
       id: movieData.stremioId,
       type: 'movie', // Content type is "movie"
@@ -159,7 +200,7 @@ async function metaHandler(type, id) {
       description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}\nSeason: ${movieData.seasonNumber || 'N/A'}, Episode: ${movieData.episodeNumber || 'N/A'}`,
       releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
       imdbRating: 'N/A',
-      genres: movieData.languages ? JSON.parse(movieData.languages) : [],
+      genres: genres, // Use the safely parsed genres
       // 'videos' property is not used for 'movie' type
       videos: []
     };
@@ -218,6 +259,10 @@ async function streamHandler(type, id) {
       try {
         if (streamData.sources) {
           sourcesArray = JSON.parse(streamData.sources);
+            if (!Array.isArray(sourcesArray)) {
+                logger.warn(`Parsed sources for movie ID ${id} is not an array. Resetting to empty array.`);
+                sourcesArray = [];
+            }
         }
       } catch (e) {
         logger.error(`Failed to parse sources for movie ID ${id}:`, e);
@@ -227,6 +272,7 @@ async function streamHandler(type, id) {
             message: `Failed to parse sources JSON for movie ID: ${id}`,
             error: e.message
         });
+        sourcesArray = []; // Reset to empty array on parsing error
       }
 
       // Construct Stremio stream object from the movieData
