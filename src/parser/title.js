@@ -4,7 +4,8 @@ const { logger } = require('../utils/logger');
 
 /**
  * @typedef {object} ParsedTitleMetadata
- * @property {string} title - The main, cleaned title of the series/movie, reconstructed with year and season.
+ * @property {string} title - The full display title of the series/movie, reconstructed with year, season, and episode.
+ * @property {string} baseShowName - The core show name, heavily cleaned, without any year, season, or episode reconstruction.
  * @property {number} [year] - The release year.
  * @property {number} [season] - The season number (optional).
  * @property {number} [episodeStart] - The starting episode number (optional).
@@ -88,8 +89,9 @@ function normalizeTitle(text) {
 function parseTitle(titleString) {
   /** @type {ParsedTitleMetadata} */
   const metadata = {
-    title: titleString, // Default to original title
-    originalTitle: titleString,
+    title: titleString, // Default to original title, later becomes full display title
+    originalTitle: titleString, // Keep original raw title
+    baseShowName: '', // Will be set to the very clean base name
     languages: [],
     resolutions: [],
     qualityTags: [],
@@ -194,35 +196,36 @@ function parseTitle(titleString) {
   metadata.hasESub = SUBTITLE_PATTERN.test(tempTitle);
   tempTitle = tempTitle.replace(SUBTITLE_PATTERN, ' '); // Strip subtitles
 
-
-  // Final cleaning of the base title: remove extra spaces and any remaining stray special chars
-  let finalCleanedBaseTitle = tempTitle.replace(/[-_.,()[\]{}|]/g, ' ') // Replace common separators with spaces
+  // --- NEW: Set baseShowName first, before full title reconstruction ---
+  // Final cleaning of the base name only (without year, season, episode reconstruction)
+  let baseCleanedName = tempTitle.replace(/[-_.,()[\]{}|]/g, ' ') // Replace common separators with spaces
                                       .replace(/\s+/g, ' ') // Reduce multiple spaces to single
                                       .trim(); // Trim leading/trailing spaces
-  
-  // Reconstruct the `title` field for Stremio display as "Base Title (YEAR) SXX EP(YY-ZZ)"
-  let reconstructedDisplayTitleParts = [finalCleanedBaseTitle];
+  metadata.baseShowName = baseCleanedName; // Assign to the new field
+
+  // --- Reconstruct the full display title (for stream titles) ---
+  let reconstructedDisplayTitleParts = [baseCleanedName]; // Start with the heavily cleaned base name
   if (metadata.year) {
       reconstructedDisplayTitleParts.push(`(${metadata.year})`);
   }
   if (metadata.season) {
       reconstructedDisplayTitleParts.push(`S${metadata.season.toString().padStart(2, '0')}`);
   }
-  // Append episode range/single if applicable and distinct from season
-  if (metadata.episodeStart && (metadata.episodeStart !== 1 || metadata.episodeEnd !== 1 || (finalCleanedBaseTitle.toLowerCase().includes('episode') && metadata.season === 1 && metadata.episodeStart === 1 && metadata.episodeEnd === 1))) {
+  // Append episode range/single if applicable
+  if (metadata.episodeStart) { 
       if (metadata.episodeEnd && (metadata.episodeStart !== metadata.episodeEnd)) {
           reconstructedDisplayTitleParts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
       } else {
           reconstructedDisplayTitleParts.push(`EP${metadata.episodeStart.toString().padStart(2, '0')}`);
       }
   }
-
-  // Set the final display title
   metadata.title = reconstructedDisplayTitleParts.join(' ').replace(/\s+/g, ' ').trim();
+
 
   // Fallback for cases where parsing might result in an empty or malformed title
   if (!metadata.title || metadata.title.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
       metadata.title = titleString.replace(/\[.*?\]|\(.*?\)/g, '').replace(/\s+/g, ' ').trim() || titleString;
+      metadata.baseShowName = metadata.title; // Ensure baseShowName also has a fallback
   }
 
   logger.debug('Parsed Title Metadata:', JSON.stringify(metadata, null, 2));
@@ -231,10 +234,10 @@ function parseTitle(titleString) {
 
 /**
  * Performs fuzzy matching between two titles using Jaro-Winkler similarity.
- * @param title1 The first title string.
- * @param title2 The second title string.
- * @param threshold The similarity threshold (0.0 to 1.0).
- * @returns True if the similarity is above the threshold, false otherwise.
+ * @param {string} title1 The first title string.
+ * @param {string} title2 The second title string.
+ * @param {number} [threshold=0.85] The similarity threshold (0.0 to 1.0).
+ * @returns {boolean} True if the similarity is above the threshold, false otherwise.
  */
 function fuzzyMatch(title1, title2, threshold = 0.85) {
   const normalized1 = normalizeTitle(title1);
@@ -256,52 +259,21 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
  * This removes episode numbers, quality/codec tags, sizes, subtitles, website domains,
  * and stray punctuation, leaving just "Series Title (Year) SXX".
  *
- * @param {string} rawTitle The raw title string (e.g., from magnet name or parsed thread title).
- * @returns {string} The cleaned series-season title for the catalog.
+ * @param {string} rawBaseShowName The core base show name (from parseTitle.baseShowName).
+ * @param {number} year The year of the series/season.
+ * @param {number} season The season number.
+ * @returns {string} The heavily cleaned series-season title for the catalog.
  */
-function cleanBaseTitleForCatalog(rawTitle) {
-  if (!rawTitle) return '';
+function cleanBaseTitleForCatalog(rawBaseShowName, year, season) {
+  if (!rawBaseShowName) return '';
 
-  let cleaned = rawTitle;
+  // Start with the rawBaseShowName, which is already very clean of extraneous parts
+  let cleaned = rawBaseShowName;
 
-  // 1. Remove website domains (e.g., www.1TamilBlasters.earth)
-  cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, '');
-
-  // 2. Remove streamname prefix "TamilShow - resolution - "
-  cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
-
-  // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
-  cleaned = cleaned.replace(/\[.*?\]/g, '');
-
-  // 4. Remove episode indicators (EPXX, E XX, Episode XX) and resolution postfixes (- HD, - HQ, - LQ)
-  // This is the key difference from cleanStreamDetailsTitle
-  cleaned = cleaned.replace(/(?:EP(?:\d+(?:-\d+)?)|E\d+|Episode(?:s)?\s*\d+(?:-\d+)?|-\s*(?:HD|HQ|LQ))/gi, '');
-
-  // 5. Remove sizes (e.g., " - 600MB", " - 1.7GB")
-  cleaned = cleaned.replace(/\s*-\s*\d+\.?\d*\s*[KMGT]?B\b/gi, '');
-
-  // 6. Remove subtitle indicators (e.g., " - ESub]", " - ESub")
-  cleaned = cleaned.replace(/\s*-\s*ESub\b|\s*Subtitles?\b/gi, '');
-
-  // 7. Remove any file extensions (e.g., .mkv, .mp4, .avi) at the end of the string
-  cleaned = cleaned.replace(/\.\w{2,4}\s*$/, '');
-
-  // 8. Remove common codec/quality strings (case-insensitive)
-  const codecQualityPatterns = [
-      'AVC', 'x264', 'x265', 'HEVC', 'AAC', 'DD5\\.1', 'AC3', 'DTS', 'HDRip',
-      'WEB-DL', 'BluRay', 'HDTV', 'WEBRip', 'BDRip', 'DVDRip', 'UNTOUCHED',
-      'HDR', 'DDP', 'WEB', 'RIP', 'BR'
-  ];
-  // Regex to remove these patterns if they appear as standalone words or hyphenated
-  const regex = new RegExp(`(?:\\s*[-+ ]*\\b(?:${codecQualityPatterns.join('|')})\\b)*`, 'gi');
-  cleaned = cleaned.replace(regex, '');
-
-  // 9. Remove stray punctuation or multiple spaces, and trim
-  // Keep year parentheses
-  cleaned = cleaned.replace(/[-\+]/g, ' '); // Replace hyphens/pluses with single space
-  cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses. KEEP PARENTHESES FOR YEAR/SEASON.
-  cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
-  cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens/spaces
+  // Now, add year and season in the desired format
+  // This ensures the catalog title is precisely "Base Title (Year) SXX"
+  const formattedSeason = season.toString().padStart(2, '0');
+  cleaned = `${cleaned} (${year}) S${formattedSeason}`.replace(/\s+/g, ' ').trim();
 
   return cleaned;
 }
