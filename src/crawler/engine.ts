@@ -8,11 +8,13 @@ import { normalizeTitle } from '../parser/title'; // Added import for normalizeT
 
 /**
  * Interface for MagnetData as specified in requirements.
+ * Now includes resolution and size for each magnet.
  */
 export interface MagnetData {
   url: string;
-  name: string;
+  name: string; // Full descriptive name from ipsAttachLink_title
   size?: string;
+  resolution?: string; // Add resolution here
 }
 
 /**
@@ -218,8 +220,8 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
 
 /**
  * Parses resolution and size from a magnet name/filename.
- * Example magnet name: "Cooku With Comali (2025) S06E01 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC - 7GB].mkv"
- * @param magnetName The name extracted from the magnet URI's 'dn' parameter.
+ * This is now primarily called from processor.ts, but kept here for potential re-use or external calls.
+ * @param magnetName The name extracted from the magnet URI's 'dn' parameter or torrent title.
  * @returns An object containing parsed resolution and size, or null if not found.
  */
 function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?: string, size?: string } {
@@ -246,17 +248,15 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
  * @param data The processed thread content.
  */
 async function saveThreadData(data: ThreadContent): Promise<void> {
-  // Destructure relevant fields, and rename threadStartedTime to avoid direct conflict
+  // Destructure relevant fields, including initialThreadStartedTime for type guarding
   const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
   
-  // Explicitly define a string variable and assign the value with a robust type guard.
-  // This will ensure 'finalThreadStartedTime' is always of type 'string' at compile time.
+  // Explicitly ensure threadStartedTime is a string, providing a fallback.
+  // This robust type guard ensures 'finalThreadStartedTime' is always of type 'string' at compile time.
   let finalThreadStartedTime: string;
   if (typeof initialThreadStartedTime === 'string') {
     finalThreadStartedTime = initialThreadStartedTime;
   } else {
-    // This else block is a fallback for extremely unlikely scenarios or compiler quirks,
-    // ensuring a string value is always provided.
     logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${threadId}. Using current timestamp as fallback.`);
     finalThreadStartedTime = new Date().toISOString(); 
   }
@@ -298,40 +298,20 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       continue;
     }
 
-    // Try to get resolution and size from magnet name (dn) first
-    const { resolution: magnetResolution, size: magnetSize } = parseResolutionAndSizeFromMagnetName(magnet.name);
+    // Now, magnet.name contains the full descriptive title and magnet.resolution is parsed.
+    const streamName = `Tamilshow-${(magnet.resolution || 'unknown').toLowerCase()}`; // e.g., Tamilshow-1080p
+    const streamTitle = magnet.name; // Use the full descriptive name as the stream title
 
-    // Fallback to thread-level parsed resolution if magnet name doesn't provide it
-    const finalResolution = magnetResolution || (await (async () => {
-        const { parseTitle } = await import('../parser/title');
-        const parsedThreadTitle = parseTitle(title);
-        return parsedThreadTitle.resolution;
-    })());
-    const finalSize = magnetSize || magnet.size || ''; // Use magnet.size if present, otherwise empty
-
-    const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount); // Handle multiple magnets for same episode, incrementing if needed
-
-    // Episode keys are now constructed to link to the stremioMovieId and include S/E/Res.
-    // Using a hash of the magnet URL to guarantee unique keys for each stream.
+    // Episode keys include resolution for better uniqueness and filtering
     const magnetHash = Buffer.from(magnet.url).toString('base64').substring(0, 10); // Short hash
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${finalResolution || 'unknown'}:${magnetHash}`;
-
-    // Construct a more descriptive stream title
-    const streamTitle = `${title}` +
-                        (seasonNum ? ` S${seasonNum}` : '') +
-                        (currentEpisodeNum ? ` E${currentEpisodeNum}` : '') +
-                        ` ${finalResolution ? `[${finalResolution}]` : ''}` +
-                        ` ${languages.length ? `[${languages.join('/')}]` : ''}` +
-                        ` ${finalSize ? `(${finalSize})` : ''}` +
-                        ` - ${magnet.name}`.trim();
-
+    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${(episodeStart || 1) + (i % episodeCount)}:${magnet.resolution || 'unknown'}:${magnetHash}`;
 
     await hmset(episodeKey, {
       magnet: magnet.url,
-      name: magnet.name,
-      title: streamTitle,
-      size: finalSize,
-      resolution: finalResolution,
+      name: streamName, // Formatted as Tamilshow-resolution
+      title: streamTitle, // Full descriptive name
+      size: magnet.size || '', // Use size parsed in processor.ts
+      resolution: magnet.resolution || '', // Use resolution parsed in processor.ts
       timestamp: now.toISOString(),
       threadUrl: originalUrl,
       stremioMovieId: stremioMovieId
@@ -387,7 +367,7 @@ async function revisitExistingThreads(): Promise<void> {
   const threadKeys = await redisClient.keys('thread:*');
 
   const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000; // hours to ms
-  const now = Date.now(); // Corrected from Date.Now()
+  const now = Date.now(); 
 
   const threadsToRevisit: string[] = [];
 
