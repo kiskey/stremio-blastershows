@@ -67,11 +67,13 @@ async function hmset(key, data) {
 
 /**
  * Function to get all fields and values from a Redis Hash.
+ * RENAMED INTERNALLY to avoid recursion, but exported as `hgetall`.
  * @param {string} key The key of the hash.
  * @returns {Promise<Record<string, string>>} An object containing all field-value pairs, or an empty object if not found.
  */
-async function hgetall(key) {
+async function getRedisHashAll(key) { // Renamed from hgetall to avoid recursion
   try {
+    // Correctly call the hgetall method of the ioredis client instance
     return await redisClient.hgetall(key);
   } catch (error) {
     console.error(`Error HGETALL key: ${key}`, error);
@@ -140,11 +142,14 @@ async function purgeRedis() {
   }
 }
 
+// Export the redisClient instance as the default export
 module.exports = redisClient;
+
+// Export specific functions with their intended names
 module.exports.hget = hget;
 module.exports.hset = hset;
 module.exports.hmset = hmset;
-module.exports.hgetall = hgetall;
+module.exports.hgetall = getRedisHashAll; // Export the renamed function as 'hgetall'
 module.exports.zadd = zadd;
 module.exports.zrangebyscore = zrangebyscore;
 module.exports.del = del;
