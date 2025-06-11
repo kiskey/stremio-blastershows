@@ -22,7 +22,7 @@ const { logger } = require('../utils/logger');
 // Regex patterns for extracting various metadata components
 const YEAR_PATTERN = /\(?(\d{4})\)?/g; // Global flag
 const SEASON_EPISODE_PATTERN = /(?:S(\d+)(?:E(?:P)?(\d+)(?:-(\d+))?)?|Season\s*(\d+)(?:\s*Episode(?:s)?\s*(\d+)(?:-(\d+))?)?|s(\d+)(?:e(\d+))|complete series|season\s*pack|full\s*season)/ig; // Global flag
-const RESOLUTION_PATTERN = /(\d{3,4}p|4K)/ig; // Global flag
+const RESOLUTION_PATTERN = /(\d{3,4}p|4K)/ig; // Global flag to find all
 const QUALITY_TAGS_PATTERN = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|AVC)/ig; // Global flag
 const CODEC_PATTERN = /(x264|x265|HEVC)/ig; // Global flag
 const AUDIO_CODEC_PATTERN = /(AAC|DD5\.1|AC3|DTS)/ig; // Global flag
@@ -48,22 +48,35 @@ const LANGUAGE_MAP = {
 };
 
 /**
- * Normalizes a string for fuzzy matching by removing special characters,
- * converting to lowercase, replacing synonyms, and trimming.
- * This also removes all non-alphanumeric characters except spaces.
+ * Normalizes a string for fuzzy matching and ID generation.
+ * Removes all non-alphanumeric characters (except spaces for initial cleaning)
+ * and then replaces spaces with hyphens.
  * @param {string} text The input string to normalize.
  * @returns {string} The normalized string.
  */
 function normalizeTitle(text) {
   if (!text) return '';
   let normalized = text.toLowerCase();
-  normalized = normalized.replace(/[^a-z0-9\s]/g, ''); // Remove all special characters for cleaner matching
+
+  // Remove specific common terms that shouldn't be part of the base title for ID generation
+  normalized = normalized.replace(/\b(complete series|season pack|full season|ep\d+(-\d+)?)\b/g, '');
+
+  // Remove all non-alphanumeric characters (except spaces temporarily)
+  normalized = normalized.replace(/[^a-z0-9\s]/g, ''); 
+
+  // Replace synonyms for seasons/episodes if they remain
   normalized = normalized.replace(/\bseason\b/g, 's');
   normalized = normalized.replace(/\bepisode\b/g, 'ep');
   normalized = normalized.replace(/\bpart\b/g, 'p');
   normalized = normalized.replace(/\bvol\b/g, 'v');
-  normalized = normalized.replace(/s\b/g, ''); // Simple plural removal (e.g., 'series' -> 'serie')
-  normalized = normalized.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
+  normalized = normalized.replace(/s\b/g, ''); // Simple plural removal
+
+  // Reduce multiple spaces to single, then replace spaces with hyphens for ID readiness
+  normalized = normalized.replace(/\s+/g, '-').trim();
+
+  // Remove any leading/trailing hyphens that might result from replacements
+  normalized = normalized.replace(/^-+|-+$/g, '');
+
   return normalized;
 }
 
@@ -122,33 +135,25 @@ function parseTitle(titleString) {
   const seMatch = [...tempTitle.matchAll(SEASON_EPISODE_PATTERN)];
   if (seMatch.length > 0 && seMatch[0].groups) {
     const groups = seMatch[0].groups;
-    if (groups.season) metadata.season = parseInt(groups.season, 10);
-    else if (groups[4]) metadata.season = parseInt(groups[4], 10); // Season <digits>
-    else if (groups[7]) metadata.season = parseInt(groups[7], 10); // s<digits>
+    // Prioritize non-undefined capture groups from the pattern
+    metadata.season = parseInt(groups[1] || groups[4] || groups[7] || '1', 10);
+    metadata.episodeStart = parseInt(groups[2] || groups[5] || groups[8] || '1', 10);
+    metadata.episodeEnd = parseInt(groups[3] || groups[6] || (metadata.episodeStart ? metadata.episodeStart.toString() : '1'), 10);
 
-    if (groups.episodeStart) metadata.episodeStart = parseInt(groups.episodeStart, 10);
-    else if (groups[5]) metadata.episodeStart = parseInt(groups[5], 10); // Episode <digits>
-    else if (groups[8]) metadata.episodeStart = parseInt(groups[8], 10); // e<digits>
-
-    if (groups.episodeEnd) metadata.episodeEnd = parseInt(groups.episodeEnd, 10);
-    else if (groups[6]) metadata.episodeEnd = parseInt(groups[6], 10); // -(digits) for range
-
+    // Special handling for "complete series" / "season pack"
     if (seMatch[0][0].toLowerCase().includes('complete series') || seMatch[0][0].toLowerCase().includes('season pack') || seMatch[0][0].toLowerCase().includes('full season')) {
-      if (!metadata.season) metadata.season = 1; // Default to Season 1 for season packs
-      if (!metadata.episodeStart) metadata.episodeStart = 1; // Default to Episode 1 for season packs
+      if (!metadata.season) metadata.season = 1;
+      if (!metadata.episodeStart) metadata.episodeStart = 1;
+      // episodeEnd might remain undefined, implying all episodes of the season or series
     }
-
-    if (metadata.episodeStart && !metadata.episodeEnd) {
-      metadata.episodeEnd = metadata.episodeStart; // Single episode
-    }
+    
     tempTitle = tempTitle.replace(SEASON_EPISODE_PATTERN, ' ');
+  } else {
+    // If no season/episode pattern found, default to S1E1 for consistency
+    metadata.season = 1;
+    metadata.episodeStart = 1;
+    metadata.episodeEnd = 1;
   }
-
-  // Define a generic stripper for patterns that don't need extraction to metadata fields
-  const stripPattern = (pattern) => {
-    resetRegex(pattern);
-    tempTitle = tempTitle.replace(pattern, ' ');
-  };
 
   // 3. Extract Resolutions
   metadata.resolutions = extractAndStrip(RESOLUTION_PATTERN, m => m[1].trim());
@@ -156,10 +161,10 @@ function parseTitle(titleString) {
   // 4. Extract Quality Tags
   metadata.qualityTags = extractAndStrip(QUALITY_TAGS_PATTERN, m => m[0].trim());
 
-  // 5. Extract Codecs (These are often part of quality tags but explicitly extracting)
+  // 5. Extract Codecs
   metadata.codecs = extractAndStrip(CODEC_PATTERN, m => m[1].trim());
 
-  // 6. Extract Audio Codecs (Similar to codecs)
+  // 6. Extract Audio Codecs
   metadata.audioCodecs = extractAndStrip(AUDIO_CODEC_PATTERN, m => m[1].trim());
 
   // 7. Extract Languages
@@ -173,12 +178,13 @@ function parseTitle(titleString) {
         const mappedLang = LANGUAGE_MAP[part.toLowerCase()];
         if (mappedLang) {
             extractedLanguages.add(mappedLang);
+        } else if (part) { // Add original part if no mapping, but is not empty
+            extractedLanguages.add(part.toLowerCase());
         }
     });
   });
   metadata.languages = Array.from(extractedLanguages);
-  stripPattern(LANGUAGE_PATTERN);
-
+  tempTitle = tempTitle.replace(LANGUAGE_PATTERN, ' '); // Strip languages
 
   // 8. Extract Sizes
   metadata.sizes = extractAndStrip(SIZE_PATTERN, m => m[1].trim());
@@ -186,37 +192,38 @@ function parseTitle(titleString) {
   // 9. Extract Subtitle info
   resetRegex(SUBTITLE_PATTERN);
   metadata.hasESub = SUBTITLE_PATTERN.test(tempTitle);
-  stripPattern(SUBTITLE_PATTERN);
+  tempTitle = tempTitle.replace(SUBTITLE_PATTERN, ' '); // Strip subtitles
 
-  // Final cleaning of the title candidate: remove extra spaces, special chars that might remain
-  let finalCleanedTitle = tempTitle.replace(/[-_.,()[\]{}|]/g, ' ') // Replace common separators with spaces
+
+  // Final cleaning of the base title: remove extra spaces and any remaining stray special chars
+  let finalCleanedBaseTitle = tempTitle.replace(/[-_.,()[\]{}|]/g, ' ') // Replace common separators with spaces
                                       .replace(/\s+/g, ' ') // Reduce multiple spaces to single
                                       .trim(); // Trim leading/trailing spaces
   
-  // Reconstruct the `title` field for Stremio display as "Base Title (YEAR) SXX"
-  let reconstructedTitleParts = [finalCleanedTitle];
+  // Reconstruct the `title` field for Stremio display as "Base Title (YEAR) SXX EP(YY-ZZ)"
+  let reconstructedDisplayTitleParts = [finalCleanedBaseTitle];
   if (metadata.year) {
-      reconstructedTitleParts.push(`(${metadata.year})`);
+      reconstructedDisplayTitleParts.push(`(${metadata.year})`);
   }
   if (metadata.season) {
-      reconstructedTitleParts.push(`S${metadata.season.toString().padStart(2, '0')}`);
+      reconstructedDisplayTitleParts.push(`S${metadata.season.toString().padStart(2, '0')}`);
   }
-  // This part is for the display title, not for the ID.
-  if (metadata.episodeStart && metadata.episodeEnd && (metadata.episodeStart !== metadata.episodeEnd)) {
-      reconstructedTitleParts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
-  } else if (metadata.episodeStart) {
-      reconstructedTitleParts.push(`EP${metadata.episodeStart.toString().padStart(2, '0')}`);
+  // Append episode range/single if applicable and distinct from season
+  if (metadata.episodeStart && (metadata.episodeStart !== 1 || metadata.episodeEnd !== 1 || (finalCleanedBaseTitle.toLowerCase().includes('episode') && metadata.season === 1 && metadata.episodeStart === 1 && metadata.episodeEnd === 1))) {
+      if (metadata.episodeEnd && (metadata.episodeStart !== metadata.episodeEnd)) {
+          reconstructedDisplayTitleParts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
+      } else {
+          reconstructedDisplayTitleParts.push(`EP${metadata.episodeStart.toString().padStart(2, '0')}`);
+      }
   }
 
-  // If after all stripping and reconstruction, the title is empty or just year/season/episode info,
-  // revert to a simpler title by stripping only common meta tags, or use the originalTitle as a fallback.
-  if (!finalCleanedTitle || finalCleanedTitle.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
-      // Fallback: Strip only common bracketed/parenthesized meta tags and clean spaces from original title
+  // Set the final display title
+  metadata.title = reconstructedDisplayTitleParts.join(' ').replace(/\s+/g, ' ').trim();
+
+  // Fallback for cases where parsing might result in an empty or malformed title
+  if (!metadata.title || metadata.title.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
       metadata.title = titleString.replace(/\[.*?\]|\(.*?\)/g, '').replace(/\s+/g, ' ').trim() || titleString;
-  } else {
-      metadata.title = reconstructedTitleParts.join(' ').replace(/\s+/g, ' ').trim();
   }
-
 
   logger.debug('Parsed Title Metadata:', JSON.stringify(metadata, null, 2));
   return metadata;
