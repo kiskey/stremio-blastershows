@@ -1,11 +1,11 @@
-const { addonBuilder } = require('stremio-addon-sdk');
+const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const { config, LogLevel } = require('./config');
 const { logger } = require('./utils/logger');
 const { getManifest } = require('./addon/manifest');
 const { catalogHandler, metaHandler, streamHandler, searchHandler } = require('./addon/handlers');
 const { startCrawler } = require('./crawler/engine');
 const redisClient = require('./redis');
-const express = require('express');
+const express = require('express'); // Still needed if you use express-specific features or middlewares
 const cors = require('cors'); // Import the cors middleware
 
 // Set the logger's level based on config
@@ -14,14 +14,8 @@ logger.setLogLevel(config.LOG_LEVEL);
 // Get the addon manifest
 const manifest = getManifest();
 
-// Create our own Express app instance
-const app = express();
-
-// Enable CORS for all routes - IMPORTANT for Stremio to access the addon
-app.use(cors());
-
-// Initialize the addon builder, passing our Express app to it
-const builder = new addonBuilder(manifest, { app: app });
+// Initialize the addon builder. The SDK will create its own Express app internally.
+const builder = new addonBuilder(manifest);
 
 // Define handlers for the addon
 builder.defineCatalogHandler(async (args) => {
@@ -39,11 +33,16 @@ builder.defineStreamHandler(async (args) => {
     return streamHandler(args.type, args.id);
 });
 
-// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra.
+// --- Start the HTTP server for the addon and get the Express app instance ---
+// serveHTTP internally creates and manages the Express app for Stremio endpoints
+const app = serveHTTP(builder, { port: config.PORT });
 
-// --- Custom Endpoints ---
+// Enable CORS for all routes on the SDK's managed Express app
+app.use(cors());
 
-// Explicitly serve the manifest.json
+// --- Custom Endpoints (added to the SDK's Express app) ---
+
+// Explicitly serve the manifest.json (optional, SDK usually does this, but for explicit control)
 app.get('/manifest.json', (req, res) => {
     logger.info('Serving manifest.json');
     res.json(manifest);
@@ -113,8 +112,6 @@ app.get('/debug/crawl-data', async (req, res) => {
 });
 
 
-// Start the HTTP server for the addon
-app.listen(config.PORT, () => {
-    logger.info(`Stremio Addon server running on port ${config.PORT}`);
-    startCrawler();
-});
+// Start the crawler once the server is listening
+// The app.listen is implicitly handled by serveHTTP, so we can just call startCrawler directly
+startCrawler();
