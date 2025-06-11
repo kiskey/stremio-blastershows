@@ -269,34 +269,45 @@ function cleanStreamFileNameForCatalogTitle(fileName) {
 
     // 1. Remove streamname prefix "TamilShow - resolution - " (e.g., "TamilShow - 1080p - ")
     // This targets both "TamilShow - XXXp -" and "TamilShow - Unknown Res -"
-    cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, ' ');
+    cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
 
     // 2. Remove website domains (e.g., www.1TamilBlasters.earth, www.example.com, .net, .org, .fi, etc.)
     // More robust pattern to catch various TLDs and subdomains.
-    cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, ' ');
+    cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, '');
 
     // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
-    cleaned = cleaned.replace(/\[.*?\]/g, ' ');
+    cleaned = cleaned.replace(/\[.*?\]/g, '');
 
     // 4. Remove sizes (e.g., " - 600MB", " - 1.7GB") - specifically target trailing sizes
-    cleaned = cleaned.replace(/-\s*\d+\.?\d*\s*[KMGT]?B\b/gi, ' ');
+    // Ensure it's preceded by a space or hyphen to avoid removing valid title parts
+    cleaned = cleaned.replace(/\s*-\s*\d+\.?\d*\s*[KMGT]?B\b/gi, '');
 
     // 5. Remove subtitle indicators (e.g., " - ESub]", " - ESub")
-    cleaned = cleaned.replace(/-\s*ESub\b|Subtitles?\]?/gi, ' '); // Handles trailing ']' and common subtitle terms
+    cleaned = cleaned.replace(/\s*-\s*ESub\b|\s*Subtitles?\b/gi, '');
 
     // 6. Remove any file extensions (e.g., .mkv, .mp4, .avi) at the end of the string
-    cleaned = cleaned.replace(/\.\w{2,4}\s*$/, ' ');
+    cleaned = cleaned.replace(/\.\w{2,4}\s*$/, '');
 
-    // 7. Remove common codec/quality strings that might remain, especially if they are hyphen-prefixed
-    // Add more comprehensive list and target them globally.
-    cleaned = cleaned.replace(/(?:\s*-\s*(?:AVC|x264|x265|HEVC|AAC|DD5\.1|AC3|DTS|HDRip|WEB-DL|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR))*/gi, ' ');
+    // 7. Remove common codec/quality strings that might remain (case-insensitive)
+    const codecQualityPatterns = [
+        'AVC', 'x264', 'x265', 'HEVC', 'AAC', 'DD5\\.1', 'AC3', 'DTS', 'HDRip',
+        'WEB-DL', 'BluRay', 'HDTV', 'WEBRip', 'BDRip', 'DVDRip', 'UNTOUCHED',
+        'HDR', 'DDP', 'WEB', 'RIP', 'BR'
+    ];
+    // This regex looks for optional preceding hyphens/spaces and then the pattern, globally.
+    // It's designed to remove these as standalone tags.
+    const regex = new RegExp(`(?:\\s*[-+ ]*\\b(?:${codecQualityPatterns.join('|')})\\b)*`, 'gi');
+    cleaned = cleaned.replace(regex, '');
 
-    // 8. Remove stray hyphens or pluses that might remain from previous removals, especially at ends
-    cleaned = cleaned.replace(/[-\+]+/g, ' ');
+    // 8. Remove stray hyphens, pluses, parentheses or any other non-alphanumeric, non-space character
+    // that might remain after specific removals, ensuring not to split actual words.
+    // We explicitly allow spaces and alphanumeric characters to prevent splitting words.
+    // Allow standard parentheses for years/season/episode numbers which are often appended later.
+    cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, '');
 
-    // 9. Final cleanup: reduce multiple spaces to single space and trim leading/trailing spaces/hyphens
+    // 9. Final cleanup: reduce multiple spaces to single, then trim leading/trailing spaces/hyphens
     cleaned = cleaned.replace(/\s+/g, ' ').trim();
-    cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens
+    cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens/spaces
 
     return cleaned;
 }
