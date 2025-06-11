@@ -264,7 +264,9 @@ export async function streamHandler(type: string, id: string): Promise<any> {
 
   try {
     const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
-    const streams = await Promise.all(streamKeys.map(async (key: string) => { // Explicitly type 'key'
+    
+    // Phase 1: Fetch data and create an intermediate structure that includes resolution for sorting
+    const intermediateStreams = await Promise.all(streamKeys.map(async (key: string) => {
       const streamData = await redisClient.hgetall(key);
       if (!streamData) {
         logger.warn(`Missing stream data for key: ${key}`);
@@ -281,38 +283,43 @@ export async function streamHandler(type: string, id: string): Promise<any> {
         logger.error(`Failed to parse sources for key ${key}:`, e);
       }
 
-      // Construct Stremio stream object
-      const stream: StremioStream = { // Explicitly type 'stream'
-        name: streamData.name, // "TamilShow - <Resolution>"
-        title: streamData.title, // "Title | resolution | size"
-        infoHash: streamData.infoHash, // Use infoHash from Redis
-        sources: sourcesArray, // Use parsed sources array
-        // Do NOT include resolution in the final StremioStream object as per documentation
+      // Create an intermediate object including the resolution for sorting
+      const tempStreamWithResolution = {
+        name: streamData.name,
+        title: streamData.title,
+        infoHash: streamData.infoHash,
+        sources: sourcesArray,
+        resolution: streamData.resolution // Keep resolution here for sorting
       };
       
       // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
-      if (!stream.infoHash) {
+      if (!tempStreamWithResolution.infoHash) {
           logger.warn(`Stream for key ${key} has no infoHash. Skipping.`);
           return null;
       }
 
-      return stream;
+      return tempStreamWithResolution;
     }));
 
-    const filteredStreams = streams.filter(Boolean).sort((a: StremioStream, b: StremioStream) => { // Explicitly type 'a' and 'b'
-      // Use the helper function for safe resolution value retrieval for sorting only
-      // Access resolution from 'streamData' that comes from Redis, not 'a' or 'b' directly (as it's not on StremioStream interface)
-      const aResolution = (streams.find(s => s?.infoHash === a.infoHash) as any)?.resolution; // Temporarily cast to any to access resolution
-      const bResolution = (streams.find(s => s?.infoHash === b.infoHash) as any)?.resolution; // Temporarily cast to any to access resolution
-
-      const resA = getResolutionValue(aResolution);
-      const resB = getResolutionValue(bResolution);
+    // Phase 2: Filter out nulls and then sort the valid streams based on resolution
+    const filteredAndSortedStreams = intermediateStreams.filter(Boolean).sort((a: typeof intermediateStreams[number], b: typeof intermediateStreams[number]) => {
+      // Use the helper function for safe resolution value retrieval for sorting
+      const resA = getResolutionValue(a?.resolution); // Access resolution directly from the intermediate object
+      const resB = getResolutionValue(b?.resolution); // Access resolution directly from the intermediate object
       
       return resB - resA; // Descending order (higher resolution first)
     });
 
-    logger.info(`Returning ${filteredStreams.length} streams for movie ID ${stremioMovieId}.`);
-    return { streams: filteredStreams };
+    // Phase 3: Map to the final StremioStream interface, removing the internal 'resolution' field
+    const finalStremioStreams: StremioStream[] = filteredAndSortedStreams.map(s => ({
+      name: s?.name,
+      title: s?.title,
+      infoHash: s!.infoHash, // Asserting infoHash will be present after filtering
+      sources: s?.sources,
+    }));
+
+    logger.info(`Returning ${finalStremioStreams.length} streams for movie ID ${stremioMovieId}.`);
+    return { streams: finalStremioStreams };
   } catch (error) {
     logger.error(`Error in streamHandler for ID ${id}:`, error);
     logger.logToRedisErrorQueue({
