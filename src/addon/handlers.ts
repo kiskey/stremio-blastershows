@@ -2,7 +2,7 @@ import redisClient from '../../src/redis'; // Direct import of the default expor
 import { config } from '../../src/config';
 import { logger } from '../../src/utils/logger';
 import { normalizeTitle } from '../../src/parser/title'; // Import normalizeTitle
-import { fuzzyMatch } from '../..///src/parser/title'; // Import fuzzyMatch
+import { fuzzyMatch } from '../../src/parser/title'; // Import fuzzyMatch
 import { parseTitle } from '../../src/parser/title'; // Import parseTitle
 
 // In-memory cache for meta items to reduce Redis lookups
@@ -22,7 +22,6 @@ interface VideoItem {
 
 /**
  * Interface for a Stremio stream object.
- * Removed 'resolution' as it is not part of the official Stremio Stream Object spec.
  */
 interface StremioStream {
   name?: string;
@@ -33,54 +32,22 @@ interface StremioStream {
   url?: string;
   ytId?: string;
   externalUrl?: string;
-  // resolution?: string; // Removed this property from the public interface
 }
 
 /**
- * Interface for the intermediate stream object used internally for sorting,
- * which includes the 'resolution' property and a calculated 'score'.
+ * Interface for the intermediate stream object used internally for processing,
+ * without resolution or score for sorting.
  */
-interface TempStreamWithResolution {
+interface TempStreamForProcessing {
   name?: string;
   title?: string;
   infoHash: string;
   sources?: string[];
-  resolution?: string; // This is specifically for internal sorting, not exposed to Stremio
-  score: number; // New property for sorting
+  // The 'resolution' and 'score' fields are removed as they are not used for sorting here.
+  // Original resolution from Redis will still be accessible through streamData for constructing name/title
 }
 
-
-/**
- * Maps resolution strings to numerical values for sorting purposes.
- * Higher values represent higher quality.
- * Explicitly allow 'unknown' as a key to handle undefined/unparsed resolutions.
- */
-const resolutionOrder: { [key: string]: number } = {
-  '4K': 4000,
-  '1080p': 1080,
-  '720p': 720,
-  '480p': 480,
-  'unknown': 0 // Default for unknown or undefined resolutions
-};
-
-/**
- * Helper function to get the numerical value of a resolution for sorting.
- * This explicitly handles 'undefined' resolution strings, preventing compiler issues.
- * @param resolution The resolution string (e.g., '1080p', '4K'), or undefined.
- * @returns The numerical value for sorting, or 0 if unknown.
- */
-function getResolutionValue(resolution: string | undefined): number {
-  let keyToUse: string;
-  // Explicitly check if resolution is a string and if it exists as a key in resolutionOrder.
-  // This makes the type narrowing unambiguous for the compiler.
-  if (typeof resolution === 'string' && Object.prototype.hasOwnProperty.call(resolutionOrder, resolution)) {
-    keyToUse = resolution;
-  } else {
-    keyToUse = 'unknown';
-  }
-  return resolutionOrder[keyToUse]; // Access should now be perfectly safe and type-checked
-}
-
+// Removed resolutionOrder map and getResolutionValue helper function
 
 /**
  * Handles catalog requests from Stremio.
@@ -279,8 +246,8 @@ export async function streamHandler(type: string, id: string): Promise<any> {
   try {
     const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
     
-    // Phase 1: Fetch data and create an intermediate structure that includes resolution AND score for sorting
-    const intermediateStreams: (TempStreamWithResolution | null)[] = await Promise.all(streamKeys.map(async (key: string) => {
+    // Fetch data and create stream objects directly
+    const streams: (StremioStream | null)[] = await Promise.all(streamKeys.map(async (key: string) => {
       const streamData = await redisClient.hgetall(key);
       if (!streamData) {
         logger.warn(`Missing stream data for key: ${key}`);
@@ -297,44 +264,25 @@ export async function streamHandler(type: string, id: string): Promise<any> {
         logger.error(`Failed to parse sources for key ${key}:`, e);
       }
 
-      // Calculate the score for sorting based on resolution
-      const score = getResolutionValue(streamData.resolution);
-
-      // Create an intermediate object including the resolution and score for sorting
-      const tempStreamWithResolution: TempStreamWithResolution = {
+      // Construct Stremio stream object directly
+      const stream: StremioStream = { 
         name: streamData.name,
         title: streamData.title,
         infoHash: streamData.infoHash,
         sources: sourcesArray,
-        resolution: streamData.resolution, // Keep resolution here for internal sorting
-        score: score // Include the calculated score
       };
       
       // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
-      if (!tempStreamWithResolution.infoHash) {
+      if (!stream.infoHash) {
           logger.warn(`Stream for key ${key} has no infoHash. Skipping.`);
           return null;
       }
 
-      return tempStreamWithResolution;
+      return stream;
     }));
 
-    // Phase 2: Filter out nulls and then sort the valid streams directly by score
-    // Explicitly assert the type after filtering to guarantee it for the sort function
-    const filteredAndSortedStreams: TempStreamWithResolution[] = intermediateStreams.filter((s): s is TempStreamWithResolution => s !== null);
-
-    filteredAndSortedStreams.sort((a: TempStreamWithResolution, b: TempStreamWithResolution) => {
-      // Direct comparison using the pre-calculated score
-      return b.score - a.score; // Descending order (higher score/resolution first)
-    });
-
-    // Phase 3: Map to the final StremioStream interface, removing the internal 'resolution' and 'score' fields
-    const finalStremioStreams: StremioStream[] = filteredAndSortedStreams.map(s => ({
-      name: s.name,
-      title: s.title,
-      infoHash: s.infoHash, 
-      sources: s.sources,
-    }));
+    // Filter out nulls. No sorting by resolution here as per request.
+    const finalStremioStreams: StremioStream[] = streams.filter((s): s is StremioStream => s !== null);
 
     logger.info(`Returning ${finalStremioStreams.length} streams for movie ID ${stremioMovieId}.`);
     return { streams: finalStremioStreams };
