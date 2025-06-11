@@ -18,11 +18,11 @@ function getManifest() {
       "search"
     ],
     types: [
-      "series" // Keeping as "series" as it aligns with parsing season/episode and catalog name
+      "series" // Changed back to "series"
     ],
     catalogs: [
       {
-        type: "series", // Keeping as "series"
+        type: "series", // Changed back to "series"
         id: "tamil-web-series", // Catalog ID for web series
         name: "Tamil Web Series & TV Shows", // Updated name for clarity
         extra: [
