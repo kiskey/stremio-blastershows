@@ -2,7 +2,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { config } = require('../config');
 const redisClient = require('../redis'); // Import redisClient instance
-const { hgetall, hset, hmset, zadd, zrangebyscore, del } = require('../redis'); // Import specific Redis functions
+// Corrected import: 'hgetall' now refers to the wrapper function exported by redis.js
+const { hgetall, hset, hmset, zadd, zrangebyscore, del } = require('../redis');
 const { processThread, getUniqueThreadId } = require('./processor'); // Ensure processThread is imported
 const { logger } = require('../utils/logger');
 const { normalizeTitle, parseTitle } = require('../parser/title'); // Added import for normalizeTitle and parseTitle
@@ -189,7 +190,8 @@ async function crawlForumPage(pageNum) {
   for (const threadUrl of threadUrls) {
     const threadId = getUniqueThreadId(threadUrl);
     
-    const lastProcessed = await hgetall(`thread:${threadId}`);
+    // Use the imported hgetall from redis.js (which now calls redisClient.hgetall)
+    const lastProcessed = await hgetall(`thread:${threadId}`); 
     const now = new Date().toISOString();
 
     const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
@@ -342,6 +344,7 @@ async function revisitExistingThreads() {
   const threadsToRevisit = [];
 
   for (const key of threadKeys) {
+    // Use the imported hgetall from redis.js
     const threadData = await hgetall(key);
     if (threadData.timestamp) {
       const lastProcessedTime = new Date(threadData.timestamp).getTime();
@@ -416,5 +419,4 @@ function startCrawler() {
 
 module.exports = {
   startCrawler,
-  // Removed 'MagnetData' from exports as it's a JSDoc typedef, not a runtime variable.
 };
