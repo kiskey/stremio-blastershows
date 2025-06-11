@@ -20,17 +20,15 @@ const { logger } = require('../utils/logger');
  */
 
 // Regex patterns for extracting various metadata components
-const YEAR_PATTERN = /\(?(\d{4})\)?/; // Matches (YYYY) or Wiesbaden
+const YEAR_PATTERN = /\(?(\d{4})\)?/g; // Global flag added
 // More comprehensive season/episode patterns, including ranges and "complete series" / "season pack"
-const SEASON_EPISODE_PATTERN = /(?:S(\d+)(?:E(?:P)?(\d+)(?:-(\d+))?)?|Season\s*(\d+)(?:\s*Episode(?:s)?\s*(\d+)(?:-(\d+))?)?|s(\d+)(?:e(\d+))|complete series|season\s*pack|full\s*season)/i;
+const SEASON_EPISODE_PATTERN = /(?:S(\d+)(?:E(?:P)?(\d+)(?:-(\d+))?)?|Season\s*(\d+)(?:\s*Episode(?:s)?\s*(\d+)(?:-(\d+))?)?|s(\d+)(?:e(\d+))|complete series|season\s*pack|full\s*season)/ig; // Global flag added
 const RESOLUTION_PATTERN = /(\d{3,4}p|4K)/ig; // Global flag to find all
-const QUALITY_TAGS_PATTERN = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|AVC)/ig; // More specific quality tags
-const CODEC_PATTERN = /(x264|x265|HEVC)/ig; // x264, x265, HEVC
-const AUDIO_CODEC_PATTERN = /(AAC|DD5\.1|AC3|DTS)/ig; // AAC, DD5.1, AC3, DTS
+const QUALITY_TAGS_PATTERN = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|AVC|x264|x265|HEVC|AAC|DD5\.1|AC3|DTS)/ig; // Combined common tags for stripping
 // Updated Language pattern to correctly capture multiple languages and variations
-const LANGUAGE_PATTERN = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b)/ig;
-const SIZE_PATTERN = /(\d+\.?\d*\s*[KMGT]?B)/ig; // Matches sizes like 1.2GB, 600MB, 42GB, 980MB
-const SUBTITLE_PATTERN = /(ESub|Subtitles?)/i; // Matches ESub or Subtitles
+const LANGUAGE_PATTERN = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b)/ig; // Global flag added
+const SIZE_PATTERN = /(\d+\.?\d*\s*[KMGT]?B)/ig; // Matches sizes like 1.2GB, 600MB, 42GB, 980MB - Global flag added
+const SUBTITLE_PATTERN = /(ESub|Subtitles?)/ig; // Matches ESub or Subtitles - Global flag added
 
 /**
  * Maps common language codes/names to ISO 639-1 two-letter codes.
@@ -91,44 +89,56 @@ function parseTitle(titleString) {
   let tempTitle = titleString; // Use a temporary string to strip components
 
   // Helper to extract matches and remove them from the temporary title
-  const extractAndStrip = (pattern, mapFunc, unique = true) => {
-    const matches = [...tempTitle.matchAll(pattern)];
-    const extracted = unique ? new Set() : [];
-    matches.forEach(match => {
-        const value = mapFunc(match);
-        if (value) {
-            if (unique) extracted.add(value);
-            else extracted.push(value);
+  // Ensures global replacement with space and uses new `matchAll` results
+  const extractAndStrip = (pattern, mapFunc) => {
+    const extractedSet = new Set();
+    // Use `split` and `map` to remove all occurrences and build extracted array
+    const parts = tempTitle.split(pattern);
+    let newTempTitle = '';
+    
+    parts.forEach((part, index) => {
+        if (index > 0 && pattern.lastMatch) { // If there was a match before this part
+            const matchValue = pattern.lastMatch;
+            const valuesToAdd = mapFunc([matchValue]);
+            valuesToAdd.forEach(v => extractedSet.add(v));
         }
-        // Replace the matched part in tempTitle. Use a global replace for all occurrences.
-        tempTitle = tempTitle.replace(match[0], ' '); // Replace with space to avoid merging words
+        newTempTitle += part;
     });
-    return unique ? Array.from(extracted) : extracted;
+    tempTitle = newTempTitle; // Update tempTitle after stripping
+    return Array.from(extractedSet);
   };
   
+  // Reset lastIndex for global patterns before each use with matchAll
+  const resetRegex = (regex) => {
+      if (regex.global) regex.lastIndex = 0;
+  };
+
+
   // 1. Extract and strip Year
-  const yearMatch = tempTitle.match(YEAR_PATTERN);
-  if (yearMatch) {
-    metadata.year = parseInt(yearMatch[1], 10);
-    tempTitle = tempTitle.replace(yearMatch[0], ' ');
+  resetRegex(YEAR_PATTERN);
+  const yearMatch = [...tempTitle.matchAll(YEAR_PATTERN)];
+  if (yearMatch.length > 0) {
+    metadata.year = parseInt(yearMatch[0][1], 10); // Take the first year found
+    tempTitle = tempTitle.replace(YEAR_PATTERN, ' ');
   }
 
   // 2. Extract and strip Season and Episode
-  const seMatch = tempTitle.match(SEASON_EPISODE_PATTERN);
-  if (seMatch) {
-    // Handling multiple capture groups for various formats
-    if (seMatch[1]) metadata.season = parseInt(seMatch[1], 10); // S<digits>
-    else if (seMatch[4]) metadata.season = parseInt(seMatch[4], 10); // Season <digits>
-    else if (seMatch[7]) metadata.season = parseInt(seMatch[7], 10); // s<digits>
+  resetRegex(SEASON_EPISODE_PATTERN);
+  const seMatch = [...tempTitle.matchAll(SEASON_EPISODE_PATTERN)];
+  if (seMatch.length > 0 && seMatch[0].groups) {
+    const groups = seMatch[0].groups;
+    if (groups.season) metadata.season = parseInt(groups.season, 10);
+    else if (groups[4]) metadata.season = parseInt(groups[4], 10); // Season <digits>
+    else if (groups[7]) metadata.season = parseInt(groups[7], 10); // s<digits>
 
-    if (seMatch[2]) metadata.episodeStart = parseInt(seMatch[2], 10); // EP<digits>
-    else if (seMatch[5]) metadata.episodeStart = parseInt(seMatch[5], 10); // Episode <digits>
-    else if (seMatch[8]) metadata.episodeStart = parseInt(seMatch[8], 10); // e<digits>
+    if (groups.episodeStart) metadata.episodeStart = parseInt(groups.episodeStart, 10);
+    else if (groups[5]) metadata.episodeStart = parseInt(groups[5], 10); // Episode <digits>
+    else if (groups[8]) metadata.episodeStart = parseInt(groups[8], 10); // e<digits>
 
-    if (seMatch[3]) metadata.episodeEnd = parseInt(seMatch[3], 10); // -(digits) for range
-    else if (seMatch[6]) metadata.episodeEnd = parseInt(seMatch[6], 10); // -(digits) for range
+    if (groups.episodeEnd) metadata.episodeEnd = parseInt(groups.episodeEnd, 10);
+    else if (groups[6]) metadata.episodeEnd = parseInt(groups[6], 10); // -(digits) for range
 
-    if (seMatch[0].toLowerCase().includes('complete series') || seMatch[0].toLowerCase().includes('season pack') || seMatch[0].toLowerCase().includes('full season')) {
+    if (seMatch[0][0].toLowerCase().includes('complete series') || seMatch[0][0].toLowerCase().includes('season pack') || seMatch[0][0].toLowerCase().includes('full season')) {
       if (!metadata.season) metadata.season = 1; // Default to Season 1 for season packs
       if (!metadata.episodeStart) metadata.episodeStart = 1; // Default to Episode 1 for season packs
     }
@@ -136,46 +146,72 @@ function parseTitle(titleString) {
     if (metadata.episodeStart && !metadata.episodeEnd) {
       metadata.episodeEnd = metadata.episodeStart; // Single episode
     }
-    
-    tempTitle = tempTitle.replace(seMatch[0], ' ');
+    tempTitle = tempTitle.replace(SEASON_EPISODE_PATTERN, ' ');
   }
 
+  // Define a generic stripper that applies a pattern and cleans the tempTitle
+  const stripPattern = (pattern) => {
+    resetRegex(pattern);
+    tempTitle = tempTitle.replace(pattern, ' ');
+  };
+
   // 3. Extract Resolutions
-  metadata.resolutions = extractAndStrip(RESOLUTION_PATTERN, m => m[1].trim());
+  resetRegex(RESOLUTION_PATTERN);
+  metadata.resolutions = [...new Set([...tempTitle.matchAll(RESOLUTION_PATTERN)].map(m => m[1].trim()))];
+  stripPattern(RESOLUTION_PATTERN);
 
-  // 4. Extract Quality Tags
-  metadata.qualityTags = extractAndStrip(QUALITY_TAGS_PATTERN, m => m[0].trim());
+  // 4. Extract Quality Tags (and other general metadata for stripping)
+  resetRegex(QUALITY_TAGS_PATTERN);
+  metadata.qualityTags = [...new Set([...tempTitle.matchAll(QUALITY_TAGS_PATTERN)].map(m => m[0].trim()))];
+  stripPattern(QUALITY_TAGS_PATTERN);
 
-  // 5. Extract Codecs
-  metadata.codecs = extractAndStrip(CODEC_PATTERN, m => m[1].trim());
+  // 5. Extract Codecs (These are often part of quality tags but explicitly extracting)
+  resetRegex(CODEC_PATTERN);
+  metadata.codecs = [...new Set([...tempTitle.matchAll(CODEC_PATTERN)].map(m => m[1].trim()))];
+  // No need to strip again if they are already covered by QUALITY_TAGS_PATTERN
 
-  // 6. Extract Audio Codecs
-  metadata.audioCodecs = extractAndStrip(AUDIO_CODEC_PATTERN, m => m[1].trim());
+  // 6. Extract Audio Codecs (Similar to codecs)
+  resetRegex(AUDIO_CODEC_PATTERN);
+  metadata.audioCodecs = [...new Set([...tempTitle.matchAll(AUDIO_CODEC_PATTERN)].map(m => m[1].trim()))];
+  // No need to strip again if they are already covered by QUALITY_TAGS_PATTERN
+
 
   // 7. Extract Languages
-  const tempExtractedLanguages = extractAndStrip(LANGUAGE_PATTERN, m => {
-    // Split by '+' or space, then map to canonical language codes
-    const parts = m[0].replace(/[\[\]]/g, '').split(/[+\s]/).filter(Boolean);
-    return parts.map(p => LANGUAGE_MAP[p.toLowerCase()] || p.toLowerCase());
-  }, false); // Not unique initially for extraction, then flatten and unique
-  metadata.languages = Array.from(new Set(tempExtractedLanguages.flat()));
+  resetRegex(LANGUAGE_PATTERN);
+  const rawLanguageMatches = [...tempTitle.matchAll(LANGUAGE_PATTERN)];
+  const extractedLanguages = new Set();
+  rawLanguageMatches.forEach(match => {
+    // This regex matches "[[...]]" or "ddd" (like "tam")
+    const matchedText = match[0];
+    const cleanParts = matchedText.replace(/[\[\]]/g, '').split(/[+\s]/).filter(Boolean);
+    cleanParts.forEach(part => {
+        const mappedLang = LANGUAGE_MAP[part.toLowerCase()];
+        if (mappedLang) {
+            extractedLanguages.add(mappedLang);
+        }
+    });
+  });
+  metadata.languages = Array.from(extractedLanguages);
+  stripPattern(LANGUAGE_PATTERN);
 
 
   // 8. Extract Sizes
-  metadata.sizes = extractAndStrip(SIZE_PATTERN, m => m[1].trim());
+  resetRegex(SIZE_PATTERN);
+  metadata.sizes = [...new Set([...tempTitle.matchAll(SIZE_PATTERN)].map(m => m[1].trim()))];
+  stripPattern(SIZE_PATTERN);
 
   // 9. Extract Subtitle info
+  resetRegex(SUBTITLE_PATTERN);
   metadata.hasESub = SUBTITLE_PATTERN.test(tempTitle);
-  if (metadata.hasESub) {
-      tempTitle = tempTitle.replace(SUBTITLE_PATTERN, ' ');
-  }
+  stripPattern(SUBTITLE_PATTERN);
 
   // Final cleaning of the title candidate: remove extra spaces, special chars that might remain
-  let finalCleanedTitle = tempTitle.replace(/[-_.,()[\]{}|]+/g, ' ') // Replace common separators with spaces
+  let finalCleanedTitle = tempTitle.replace(/[-_.,()[\]{}|]/g, ' ') // Replace common separators with spaces
                                       .replace(/\s+/g, ' ') // Reduce multiple spaces to single
                                       .trim(); // Trim leading/trailing spaces
   
   // Reconstruct the `title` field for Stremio display as "Base Title (YEAR) SXX"
+  // This will be the `originalTitle` stored in Redis for the movie hash.
   let reconstructedTitleParts = [finalCleanedTitle];
   if (metadata.year) {
       reconstructedTitleParts.push(`(${metadata.year})`);
@@ -183,7 +219,6 @@ function parseTitle(titleString) {
   if (metadata.season) {
       reconstructedTitleParts.push(`S${metadata.season.toString().padStart(2, '0')}`);
   }
-  // If it's a specific episode range and not a season pack, append episode range
   // This part is for the display title, not for the ID.
   if (metadata.episodeStart && metadata.episodeEnd && (metadata.episodeStart !== metadata.episodeEnd)) {
       reconstructedTitleParts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
@@ -191,14 +226,14 @@ function parseTitle(titleString) {
       reconstructedTitleParts.push(`EP${metadata.episodeStart.toString().padStart(2, '0')}`);
   }
 
-  metadata.title = reconstructedTitleParts.join(' ').replace(/\s+/g, ' ').trim(); // Final clean-up
-
-  // If after all stripping and reconstruction, the title is empty or just year/season/episode info,
-  // revert to a simpler title by stripping only common meta tags, or use the originalTitle as a fallback.
-  if (!metadata.title || metadata.title.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
-      // Fallback: Strip only common bracketed/parenthesized meta tags and clean spaces
+  // Ensure title is not empty or just year/season info
+  if (!finalCleanedTitle || finalCleanedTitle.match(/^(\(\d{4}\)|\s*S\d{2}|\s*EP\d{2}(-\d{2})?\s*)+$/)) {
+      // Fallback: Strip only common bracketed/parenthesized meta tags and clean spaces from original title
       metadata.title = titleString.replace(/\[.*?\]|\(.*?\)/g, '').replace(/\s+/g, ' ').trim() || titleString;
+  } else {
+      metadata.title = reconstructedTitleParts.join(' ').replace(/\s+/g, ' ').trim();
   }
+
 
   logger.debug('Parsed Title Metadata:', JSON.stringify(metadata, null, 2));
   return metadata;
