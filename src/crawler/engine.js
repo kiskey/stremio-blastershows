@@ -264,7 +264,7 @@ async function saveThreadData(data) {
   // Parse original title for detailed metadata
   const parsedTitleMetadata = parseTitle(title);
   const { 
-    title: cleanedTitle, 
+    title: cleanedTitle, // This is the *reconstructed* clean title now
     year, 
     season, 
     episodeStart, 
@@ -281,8 +281,10 @@ async function saveThreadData(data) {
   const yearNum = year || new Date(finalThreadStartedTime).getFullYear(); // Fallback to thread start year if no year parsed
   const seasonNum = season || 1; // Default to Season 1 if not parsed
 
-  // Generate a candidate StremioMovieId based on cleaned title, year, and season
-  const candidateStremioMovieId = `tt${normalizeTitle(cleanedTitle)}-${yearNum}-s${seasonNum}`;
+  // Generate a candidate StremioMovieId based on normalized cleaned title, year, and season
+  // The stremioId should be derived from the fully cleaned, reconstructed title.
+  const standardizedTitleForId = normalizeTitle(cleanedTitle); // Normalize the already clean title
+  const candidateStremioMovieId = `tt${standardizedTitleForId}-${yearNum}-s${seasonNum}`;
   let stremioMovieIdToUse = candidateStremioMovieId; // Assume new by default
 
   // --- Attempt to fuzzy match with existing catalog entries ---
@@ -292,11 +294,20 @@ async function saveThreadData(data) {
     for (const key of existingMovieKeys) {
         const movieData = await redisClient.hgetall(key);
         if (movieData && movieData.originalTitle && movieData.stremioId) {
-            const existingStremioIdParts = movieData.stremioId.split('-');
-            const existingNormalizedTitle = existingStremioIdParts[0].substring(2); // Remove 'tt'
-            const existingYear = parseInt(existingStremioIdParts[1], 10);
-            const existingSeason = parseInt(existingStremioIdParts[2]?.substring(1), 10); // Remove 's'
+            // Re-parse the existing stremioId to get its components for comparison
+            // stremioId format: tt<normalized_base_title>-<year>-s<season>
+            const existingIdParts = movieData.stremioId.match(/tt(.*?)-(\d{4})-s(\d+)/);
+            if (!existingIdParts) {
+                logger.warn(`Existing stremioId format unexpected: ${movieData.stremioId}. Skipping fuzzy match for this item.`);
+                continue;
+            }
 
+            const existingNormalizedTitle = existingIdParts[1];
+            const existingYear = parseInt(existingIdParts[2], 10);
+            const existingSeason = parseInt(existingIdParts[3], 10);
+
+            // Fuzzy match the *reconstructed cleaned title* of the new thread
+            // against the *originalTitle* (which is the reconstructed clean title) of existing entries.
             const isTitleFuzzyMatch = fuzzyMatch(cleanedTitle, movieData.originalTitle);
             const isYearMatch = existingYear === yearNum;
             const isSeasonMatch = existingSeason === seasonNum;
@@ -328,7 +339,7 @@ async function saveThreadData(data) {
   if (!existingMovieData) {
       try {
         await redisClient.hmset(movieKey, {
-          originalTitle: cleanedTitle, // Use cleaned title for catalog entry
+          originalTitle: cleanedTitle, // Use the reconstructed clean title for catalog entry
           posterUrl: posterUrl,
           stremioId: stremioMovieIdToUse,
           lastUpdated: now.toISOString(),
@@ -411,9 +422,16 @@ async function saveThreadData(data) {
       continue;
     }
 
+    logger.debug(`Attempting to extract BTIH from magnet URL: ${magnet.url}`); // Added debug log
     const infoHash = extractBtihFromMagnet(magnet.url);
     if (!infoHash) {
       logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${data.threadId}.`);
+      logger.logToRedisErrorQueue({ // Log to Redis error queue
+        timestamp: new Date().toISOString(),
+        level: 'WARN',
+        message: `Magnet URL without BTIH: ${magnet.url}`,
+        url: originalUrl
+      });
       continue;
     }
     
