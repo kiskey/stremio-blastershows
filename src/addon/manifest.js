@@ -8,7 +8,7 @@ const { config } = require('../config');
 function getManifest() {
   return {
     id: config.ADDON_ID,
-    version: "1.0.0", // Hardcoded for now, could be read from package.json
+    version: "1.1.0", // Minor release to 1.1.0
     name: config.ADDON_NAME,
     description: config.ADDON_DESCRIPTION,
     resources: [
@@ -18,13 +18,13 @@ function getManifest() {
       "search"
     ],
     types: [
-      "movie" // Changed to "movie" as per your instruction
+      "movie" // Explicitly keeping "movie" as per instruction
     ],
     catalogs: [
       {
-        type: "movie", // Changed to "movie" as per your instruction
-        id: "tamil-content", // More generic catalog ID for movie type
-        name: "Tamil Movies & Episodes", // Updated name for clarity with movie type
+        type: "movie", // Explicitly keeping "movie"
+        id: "tamil-content", // More generic catalog ID for movies/episodes
+        name: "Tamil Movies & Episodes", // Name reflecting content
         extra: [
           { name: "search", isRequired: false },
           { name: "skip", isRequired: false }
