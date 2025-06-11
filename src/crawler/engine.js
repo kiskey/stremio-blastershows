@@ -4,7 +4,7 @@ const { config } = require('../config');
 const redisClient = require('../redis'); // Import redisClient instance directly
 const { processThread, getUniqueThreadId } = require('./processor');
 const { logger } = require('../utils/logger');
-const { normalizeTitle, parseTitle } = require('../parser/title');
+const { normalizeTitle, parseTitle, fuzzyMatch } = require('../parser/title'); // Import fuzzyMatch
 
 /**
  * @typedef {object} MagnetData
@@ -237,80 +237,208 @@ async function crawlForumPage(pageNum) {
 
 /**
  * Saves processed thread data into Redis according to the defined schema.
+ * This function now also handles appending new episodes to existing catalogs
+ * based on fuzzy matching.
  * @param {ThreadContent} data The processed thread content.
  * @returns {Promise<void>}
  */
 async function saveThreadData(data) {
-  const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
+  const { title, posterUrl, magnets, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
   
   let finalThreadStartedTime;
   if (typeof initialThreadStartedTime === 'string') {
     finalThreadStartedTime = initialThreadStartedTime;
   } else {
-    logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${threadId}. Using current timestamp as fallback.`);
+    logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${data.threadId}. Using current timestamp as fallback.`);
     finalThreadStartedTime = new Date().toISOString(); 
   }
   
   const now = new Date();
 
-  // Parse title to get season, year, and languages for standardized ID
-  const { season, languages } = parseTitle(title);
-  const year = new Date(finalThreadStartedTime).getFullYear();
+  // Parse original title for detailed metadata
+  const parsedTitleMetadata = parseTitle(title);
+  const { 
+    title: cleanedTitle, 
+    year, 
+    season, 
+    episodeStart, 
+    episodeEnd, 
+    languages, 
+    resolutions, 
+    qualityTags, 
+    codecs, 
+    audioCodecs, 
+    sizes, 
+    hasESub 
+  } = parsedTitleMetadata;
+
+  const yearNum = year || new Date(finalThreadStartedTime).getFullYear(); // Fallback to thread start year if no year parsed
   const seasonNum = season || 1; // Default to Season 1 if not parsed
 
-  // Standardized Stremio Movie ID: tt<normalizedTitle>-<year>-s<seasonNum>
-  // This ensures unique catalog entries for each series/season combination
-  const standardizedTitle = normalizeTitle(title);
-  const stremioMovieId = `tt${standardizedTitle}-${year}-s${seasonNum}`;
+  // Generate a candidate StremioMovieId based on cleaned title, year, and season
+  const candidateStremioMovieId = `tt${normalizeTitle(cleanedTitle)}-${yearNum}-s${seasonNum}`;
+  let stremioMovieIdToUse = candidateStremioMovieId; // Assume new by default
 
-
-  const movieKey = `movie:${stremioMovieId}`;
+  // --- Attempt to fuzzy match with existing catalog entries ---
+  let existingMovieData = null;
   try {
-    // Direct call to redisClient.hmset
-    await redisClient.hmset(movieKey, {
-      originalTitle: title,
-      posterUrl: posterUrl,
-      stremioId: stremioMovieId, // Store the standardized Stremio ID
-      lastUpdated: now.toISOString(),
-      associatedThreadId: threadId,
-      threadStartedTime: finalThreadStartedTime
-    });
-    logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${finalThreadStartedTime})`);
+    const existingMovieKeys = await redisClient.keys('movie:*');
+    for (const key of existingMovieKeys) {
+        const movieData = await redisClient.hgetall(key);
+        if (movieData && movieData.originalTitle && movieData.stremioId) {
+            const existingStremioIdParts = movieData.stremioId.split('-');
+            const existingNormalizedTitle = existingStremioIdParts[0].substring(2); // Remove 'tt'
+            const existingYear = parseInt(existingStremioIdParts[1], 10);
+            const existingSeason = parseInt(existingStremioIdParts[2]?.substring(1), 10); // Remove 's'
+
+            const isTitleFuzzyMatch = fuzzyMatch(cleanedTitle, movieData.originalTitle);
+            const isYearMatch = existingYear === yearNum;
+            const isSeasonMatch = existingSeason === seasonNum;
+
+            // A strong match requires fuzzy title match AND matching year and season
+            if (isTitleFuzzyMatch && isYearMatch && isSeasonMatch) {
+                logger.info(`Fuzzy match found for existing catalog: ${movieData.stremioId} with new thread ${originalUrl}`);
+                stremioMovieIdToUse = movieData.stremioId; // Use the existing Stremio ID
+                existingMovieData = movieData;
+                break; // Found a match, no need to check further
+            }
+        }
+    }
   } catch (error) {
-    logger.error(`Error saving movie data for ${movieKey}:`, error);
+    logger.error('Error during fuzzy matching for existing catalogs:', error);
     logger.logToRedisErrorQueue({
         timestamp: new Date().toISOString(),
         level: 'ERROR',
-        message: `Error saving movie data for key: ${movieKey}`,
+        message: `Error during fuzzy matching in saveThreadData`,
         error: error.message,
         url: originalUrl
     });
   }
 
 
-  // Use parseTitle again for episode details specifically, as it returns episodeStart/End
-  const { episodeStart, episodeEnd } = parseTitle(title);
+  const movieKey = `movie:${stremioMovieIdToUse}`;
+
+  // If no existing movie data was found (meaning it's a new entry), or if we need to update existing
+  if (!existingMovieData) {
+      try {
+        await redisClient.hmset(movieKey, {
+          originalTitle: cleanedTitle, // Use cleaned title for catalog entry
+          posterUrl: posterUrl,
+          stremioId: stremioMovieIdToUse,
+          lastUpdated: now.toISOString(),
+          associatedThreadId: data.threadId, // Associate with the thread that initiated its creation
+          threadStartedTime: finalThreadStartedTime,
+          // Store languages and seasons as JSON strings
+          languages: JSON.stringify(languages), 
+          seasons: JSON.stringify([seasonNum]) // Start with the current season
+        });
+        logger.info(`Created NEW movie data for ${movieKey} (Stremio ID: ${stremioMovieIdToUse}, Started: ${finalThreadStartedTime})`);
+      } catch (error) {
+        logger.error(`Error saving NEW movie data for ${movieKey}:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error saving NEW movie data for key: ${movieKey}`,
+            error: error.message,
+            url: originalUrl
+        });
+      }
+  } else {
+      // Update existing catalog entry's lastUpdated time and potentially seasons/languages
+      try {
+          await redisClient.hset(movieKey, 'lastUpdated', now.toISOString());
+          logger.info(`Updated existing movie data for ${movieKey} (Stremio ID: ${stremioMovieIdToUse})`);
+
+          // Update languages if new ones are found
+          const existingLanguagesString = existingMovieData.languages;
+          let existingLanguages = [];
+          if (existingLanguagesString) {
+              try {
+                  existingLanguages = JSON.parse(existingLanguagesString);
+                  if (!Array.isArray(existingLanguages)) existingLanguages = []; // Ensure it's an array
+              } catch (e) {
+                  logger.warn(`Failed to parse existing languages for ${movieKey}. Resetting.`);
+                  existingLanguages = [];
+              }
+          }
+          const mergedLanguages = Array.from(new Set([...existingLanguages, ...languages]));
+          await redisClient.hset(movieKey, 'languages', JSON.stringify(mergedLanguages));
+
+          // Update seasons if a new season is identified
+          const existingSeasonsString = existingMovieData.seasons;
+          let existingSeasons = [];
+          if (existingSeasonsString) {
+              try {
+                  existingSeasons = JSON.parse(existingSeasonsString);
+                  if (!Array.isArray(existingSeasons)) existingSeasons = []; // Ensure it's an an array
+              } catch (e) {
+                  logger.warn(`Failed to parse existing seasons for ${movieKey}. Resetting.`);
+                  existingSeasons = [];
+              }
+          }
+          const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
+          await redisClient.hset(movieKey, 'seasons', JSON.stringify(mergedSeasons));
+
+      } catch (error) {
+          logger.error(`Error updating existing movie data for ${movieKey}:`, error);
+          logger.logToRedisErrorQueue({
+              timestamp: new Date().toISOString(),
+              level: 'ERROR',
+              message: `Error updating existing movie data for key: ${movieKey}`,
+              error: error.message,
+              url: originalUrl
+          });
+      }
+  }
+
+  // --- Process and save streams (episodes) for the identified StremioMovieId ---
   let episodeCount = (episodeStart !== undefined && episodeEnd !== undefined) ? (episodeEnd - episodeStart + 1) : 1;
+  if (!episodeStart && !episodeEnd && magnets.length > 0) { // For season packs or full series, assign sequential episode numbers
+      episodeCount = magnets.length; // Assume each magnet is a distinct episode if no episode range is given
+  }
+
 
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
-      logger.warn(`Skipping magnet at index ${i} for thread ${threadId} due to missing URL.`);
+      logger.warn(`Skipping magnet at index ${i} for thread ${data.threadId} due to missing URL.`);
       continue;
     }
 
     const infoHash = extractBtihFromMagnet(magnet.url);
     if (!infoHash) {
-      logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${threadId}.`);
+      logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${data.threadId}.`);
       continue;
     }
+    
+    // For streams, enrich the name/title using parsed metadata
+    const streamNameParts = [
+      magnet.resolution || (resolutions.length > 0 ? resolutions[0] : 'Unknown Res'),
+      magnet.name || cleanedTitle, // Use magnet name or cleaned title
+      (qualityTags.length > 0 ? qualityTags.join(', ') : null),
+      (codecs.length > 0 ? codecs.join(',') : null),
+      (audioCodecs.length > 0 ? audioCodecs.join(',') : null),
+      (hasESub ? 'ESub' : null),
+    ].filter(Boolean); // Filter out nulls/empty strings
+    const streamName = `TamilShow - ${streamNameParts.join(' - ')}`;
 
-    const streamName = `TamilShow - ${magnet.resolution || 'Unknown'}`;
-    const streamTitle = `${title} | ${magnet.resolution || 'Unknown'} | ${magnet.size || 'Unknown Size'}`;
+    // The stream title can be more descriptive
+    const streamTitleParts = [
+        `S${seasonNum}E${(episodeStart || 1) + (i % episodeCount)}`, // Episode number (adjust for range or single)
+        `${magnet.resolution || (resolutions.length > 0 ? resolutions[0] : 'Unknown Res')}`,
+        `${magnet.size || (sizes.length > 0 ? sizes[0] : 'Unknown Size')}`,
+        (languages.length > 0 ? languages.join('/') : null),
+        (qualityTags.length > 0 ? qualityTags.join(' ') : null),
+        (codecs.length > 0 ? codecs.join(' ') : null),
+        (audioCodecs.length > 0 ? audioCodecs.join(' ') : null),
+        (hasESub ? 'ESub' : null),
+    ].filter(Boolean);
+    const streamTitle = `${cleanedTitle} - ${streamTitleParts.join(' | ')}`;
+
 
     const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount);
     // Episode keys include the full standardized stremioMovieId, season, episode, resolution, and infoHash
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${infoHash}`;
+    const episodeKey = `episode:${stremioMovieIdToUse}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${infoHash}`;
 
     try {
         // Direct call to redisClient.hmset
@@ -319,13 +447,21 @@ async function saveThreadData(data) {
           sources: JSON.stringify(cachedBestTrackers),
           name: streamName,
           title: streamTitle,
-          size: magnet.size || '',
-          resolution: magnet.resolution || '',
+          size: magnet.size || '', // Use magnet's size if available, fallback to parsed sizes
+          resolution: magnet.resolution || (resolutions.length > 0 ? resolutions[0] : ''), // Use magnet's res if available
           timestamp: now.toISOString(),
           threadUrl: originalUrl,
-          stremioMovieId: stremioMovieId // Link back to the standardized movie ID
+          stremioMovieId: stremioMovieIdToUse, // Link back to the standardized movie ID
+          // Store all other parsed metadata for the stream as JSON strings
+          languages: JSON.stringify(languages),
+          qualityTags: JSON.stringify(qualityTags),
+          codecs: JSON.stringify(codecs),
+          audioCodecs: JSON.stringify(audioCodecs),
+          hasESub: hasESub ? 'true' : 'false', // Store boolean as string
+          episodeNumber: currentEpisodeNum.toString(), // Store episode number for easier retrieval
+          seasonNumber: seasonNum.toString(), // Store season number
         });
-        logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}", Title: "${streamTitle}")`);
+        logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}")`);
     } catch (error) {
         logger.error(`Error saving stream data for ${episodeKey}:`, error);
         logger.logToRedisErrorQueue({
@@ -336,44 +472,6 @@ async function saveThreadData(data) {
             url: originalUrl
         });
     }
-  }
-
-  try {
-    if (languages && languages.length > 0) {
-      // Direct call to redisClient.hgetall and redisClient.hset
-      const existingLanguagesString = await redisClient.hgetall(movieKey).then(data => data.languages);
-      const existingLanguages = existingLanguagesString ? existingLanguagesString.split(',') : [];
-      const mergedLanguages = Array.from(new Set([...existingLanguages, ...languages]));
-      await redisClient.hset(movieKey, 'languages', mergedLanguages.join(','));
-    }
-  } catch (error) {
-    logger.error(`Error updating languages for movie ${movieKey}:`, error);
-    logger.logToRedisErrorQueue({
-        timestamp: new Date().toISOString(),
-        level: 'ERROR',
-        message: `Error updating languages for movie: ${movieKey}`,
-        error: error.message,
-        url: originalUrl
-    });
-  }
-
-  try {
-    // Direct call to redisClient.hgetall and redisClient.hset
-    const existingSeasonsString = await redisClient.hgetall(movieKey).then(data => data.seasons);
-    const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
-    // Ensure seasonNum is added to existing seasons and sort
-    const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-    // Store as a JSON string representing an array
-    await redisClient.hset(movieKey, 'seasons', JSON.stringify(mergedSeasons));
-  } catch (error) {
-    logger.error(`Error updating seasons for movie ${movieKey}:`, error);
-    logger.logToRedisErrorQueue({
-        timestamp: new Date().toISOString(),
-        level: 'ERROR',
-        message: `Error updating seasons for movie: ${movieKey}`,
-        error: error.message,
-        url: originalUrl
-    });
   }
 }
 
