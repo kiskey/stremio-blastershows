@@ -22,6 +22,7 @@ interface VideoItem {
 
 /**
  * Interface for a Stremio stream object.
+ * Removed 'resolution' as it is not part of the official Stremio Stream Object spec.
  */
 interface StremioStream {
   name?: string;
@@ -32,7 +33,7 @@ interface StremioStream {
   url?: string;
   ytId?: string;
   externalUrl?: string;
-  resolution?: string; // Stored resolution for sorting
+  // resolution?: string; // Removed this property from the public interface
 }
 
 /**
@@ -286,7 +287,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
         title: streamData.title, // "Title | resolution | size"
         infoHash: streamData.infoHash, // Use infoHash from Redis
         sources: sourcesArray, // Use parsed sources array
-        resolution: streamData.resolution // Include resolution for sorting
+        // Do NOT include resolution in the final StremioStream object as per documentation
       };
       
       // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
@@ -299,9 +300,13 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     }));
 
     const filteredStreams = streams.filter(Boolean).sort((a: StremioStream, b: StremioStream) => { // Explicitly type 'a' and 'b'
-      // Use the helper function for safe resolution value retrieval
-      const resA = getResolutionValue(a.resolution);
-      const resB = getResolutionValue(b.resolution);
+      // Use the helper function for safe resolution value retrieval for sorting only
+      // Access resolution from 'streamData' that comes from Redis, not 'a' or 'b' directly (as it's not on StremioStream interface)
+      const aResolution = (streams.find(s => s?.infoHash === a.infoHash) as any)?.resolution; // Temporarily cast to any to access resolution
+      const bResolution = (streams.find(s => s?.infoHash === b.infoHash) as any)?.resolution; // Temporarily cast to any to access resolution
+
+      const resA = getResolutionValue(aResolution);
+      const resB = getResolutionValue(bResolution);
       
       return resB - resA; // Descending order (higher resolution first)
     });
