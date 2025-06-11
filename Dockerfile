@@ -20,7 +20,7 @@ RUN npm install --only=production
 
 # Copy all application source code
 COPY src ./src
-COPY index.js . # Assuming index.js is directly in the root, or adjust path if it's in src/
+COPY index.js . 
 
 # No 'npm run build' step as there's no TypeScript to compile.
 
@@ -48,4 +48,4 @@ ENV PORT=7000
 
 
 # Command to run the application
-CMD ["node", "src/index.js"] # Point directly to the main JS file
+CMD ["node", "src/index.js"]
