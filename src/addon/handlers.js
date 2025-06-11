@@ -42,7 +42,8 @@ async function catalogHandler(type, id, extra) {
   try {
     if (searchKeywords) {
       logger.info(`Performing search for: ${searchKeywords}`);
-      const keys = await redisClient.keys('movie_group:*'); // Search movie_group keys
+      // CHANGED: Search for 'movie:*' keys
+      const keys = await redisClient.keys('movie:*'); 
       for (const key of keys) {
         const movieGroupData = await redisClient.hgetall(key);
         // Fuzzy match against the originalTitle of the movie group (e.g., "Suits LA (2025) S01")
@@ -51,7 +52,8 @@ async function catalogHandler(type, id, extra) {
         }
       }
     } else {
-      movieGroupKeys = await redisClient.keys('movie_group:*'); // Get all movie_group keys
+      // CHANGED: Get all 'movie:*' keys
+      movieGroupKeys = await redisClient.keys('movie:*'); 
     }
 
     const metas = await Promise.all(movieGroupKeys.map(async (key) => {
@@ -155,7 +157,8 @@ async function metaHandler(type, id) {
   }
 
   try {
-    const movieGroupData = await redisClient.hgetall(`movie_group:${id}`); // Fetch the specific movie group data
+    // CHANGED: Fetch from 'movie:' prefix
+    const movieGroupData = await redisClient.hgetall(`movie:${id}`); 
     if (!movieGroupData) {
       logger.info(`Movie group with Stremio ID ${id} not found in Redis.`);
       return { meta: null };
@@ -192,7 +195,6 @@ async function metaHandler(type, id) {
       releaseInfo: new Date(movieGroupData.threadStartedTime).getFullYear().toString(),
       imdbRating: 'N/A',
       genres: genres, // Use the safely parsed genres
-      // 'videos' property is NOT applicable for 'movie' type. Streams will be returned by streamHandler.
       videos: [] // Must be empty for movie type
     };
 
@@ -233,8 +235,8 @@ async function streamHandler(type, id) {
   const streams = [];
   try {
       // Fetch ALL individual streams associated with this movie group ID
-      // The pattern matches `stream_data:<movieGroupId>:s<season>e<episode>:<resolution>-<infoHash>`
-      const streamDataKeys = await redisClient.keys(`stream_data:${id}:*`); 
+      // CHANGED: Query for 'stream:' prefix
+      const streamDataKeys = await redisClient.keys(`stream:${id}:*`); 
       logger.debug(`Found ${streamDataKeys.length} stream data keys for movie group ID ${id}: ${JSON.stringify(streamDataKeys)}`);
 
       if (streamDataKeys.length === 0) {
@@ -245,6 +247,7 @@ async function streamHandler(type, id) {
       // Fetch details for all found stream data keys
       for (const streamDataKey of streamDataKeys) {
         try {
+            // CHANGED: Fetch from 'stream:' prefix
             const streamData = await redisClient.hgetall(streamDataKey); 
             logger.debug(`Retrieved streamData for ${streamDataKey}:`, streamData); 
 
@@ -312,6 +315,36 @@ async function streamHandler(type, id) {
   }
 
   logger.info(`Returning ${streams.length} streams for movie group ID: ${id}.`);
+  // Sort streams if desired (e.g., by episode number, then resolution)
+  streams.sort((a, b) => {
+    // Assuming stream.title contains 'SXX EPYY' or similar for sorting
+    const getEpisodeSortKey = (title) => {
+        const match = title.match(/S(\d+)\s*EP\(?(\d+)/i);
+        if (match) {
+            return parseInt(match[1]) * 1000 + parseInt(match[2]); // Season * 1000 + Episode
+        }
+        return 0; // Default for non-matching titles
+    };
+    const getResolutionValue = (name) => {
+        const resMatch = name.match(/(\d{3,4}p|4K)/i);
+        if (resMatch) {
+            const res = resMatch[1].toLowerCase();
+            if (res === '4k') return 4000;
+            return parseInt(res.replace('p', ''));
+        }
+        return 0; // Default
+    };
+
+    const episodeA = getEpisodeSortKey(a.title);
+    const episodeB = getEpisodeSortKey(b.title);
+
+    if (episodeA !== episodeB) {
+        return episodeA - episodeB;
+    }
+
+    // If episodes are the same, sort by resolution (descending)
+    return getResolutionValue(b.name) - getResolutionValue(a.name);
+  });
   return { streams: streams }; 
 }
 
