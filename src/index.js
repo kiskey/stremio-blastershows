@@ -1,4 +1,4 @@
-const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
+const { addonBuilder } = require('stremio-addon-sdk'); // Removed serveHTTP as we will use app.listen directly
 const { config, LogLevel } = require('./config');
 const { logger } = require('./utils/logger');
 const { getManifest } = require('./addon/manifest');
@@ -13,14 +13,16 @@ logger.setLogLevel(config.LOG_LEVEL);
 // Get the addon manifest
 const manifest = getManifest();
 
-// Initialize the addon builder with the manifest
-const builder = new addonBuilder(manifest);
+// Create our own Express app instance
+const app = express();
+
+// Initialize the addon builder, passing our Express app to it
+// This tells the SDK to use 'app' as its underlying Express instance
+const builder = new addonBuilder(manifest, { app: app });
 
 // Define handlers for the addon
 builder.defineCatalogHandler(async (args) => {
     logger.debug('Handling catalog request...');
-    // The catalogHandler is designed to handle both general catalog requests and search requests
-    // by checking args.extra.search
     return catalogHandler(args.type, args.id, args.extra);
 });
 
@@ -34,25 +36,19 @@ builder.defineStreamHandler(async (args) => {
     return streamHandler(args.type, args.id);
 });
 
-// REMOVED: builder.defineSearchHandler as it's not a direct method
-// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra
+// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra.
+// No need for a separate defineSearchHandler.
 
-// Get the Stremio Addon SDK's Express app (this is how serveHTTP works internally)
-const addonApp = builder.get();
-
-// Create a new Express app to host both the addon and custom debug endpoints
-const app = express();
-
-// Use the addon's Express app as a middleware
-app.use(addonApp);
-
-// Add custom debug endpoint for crawl data
+// Add custom debug endpoint for crawl data directly to our Express app
 app.get('/debug/crawl-data', async (req, res) => {
     logger.info('Received debug/crawl-data request.');
     try {
+        // Fetch counts for movies, streams, and threads
         const movieKeys = await redisClient.keys('movie:*');
         const episodeKeys = await redisClient.keys('episode:*');
         const threadKeys = await redisClient.keys('thread:*');
+        
+        // Fetch error queue length and recent errors
         const errorQueueLength = await redisClient.llen('error_queue');
         const recentErrors = await redisClient.lrange('error_queue', 0, 9); // Get last 10 errors
 
@@ -67,6 +63,7 @@ app.get('/debug/crawl-data', async (req, res) => {
         const sampleStreamKeys = episodeKeys.slice(0, 5); // Get up to 5 stream keys
         const sampleStreams = await Promise.all(sampleStreamKeys.map(key => redisClient.hgetall(key)));
 
+        // Send JSON response with collected data
         res.json({
             status: 'success',
             message: 'Crawl data overview',
@@ -80,15 +77,25 @@ app.get('/debug/crawl-data', async (req, res) => {
                 movies: sampleMovies,
                 streams: sampleStreams
             },
-            recentErrors: recentErrors.map(e => JSON.parse(e))
+            // Parse recent errors from JSON strings before sending
+            recentErrors: recentErrors.map(e => {
+                try {
+                    return JSON.parse(e);
+                } catch (parseError) {
+                    logger.error('Failed to parse error log from Redis:', parseError);
+                    return { message: 'Corrupted error log', raw: e }; // Return raw string if parsing fails
+                }
+            })
         });
     } catch (error) {
+        // Log and respond if an error occurs during debug data fetching
         logger.error('Error fetching debug data:', error);
         res.status(500).json({
             status: 'error',
             message: 'Failed to retrieve debug data',
             error: error.message
         });
+        // Also log this error to the Redis error queue
         logger.logToRedisErrorQueue({
             timestamp: new Date().toISOString(),
             level: 'ERROR',
@@ -99,10 +106,9 @@ app.get('/debug/crawl-data', async (req, res) => {
 });
 
 
-// Start the HTTP server for the addon
-// Use app.listen instead of serveHTTP directly to use our custom Express app
+// Start the HTTP server for the addon using our custom Express app
 app.listen(config.PORT, () => {
     logger.info(`Stremio Addon server running on port ${config.PORT}`);
-    // Start the crawler once the server is listening
+    // Start the crawler once the server is listening to ensure Redis is available
     startCrawler();
 });
