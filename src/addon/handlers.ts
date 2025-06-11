@@ -2,7 +2,7 @@ import redisClient from '../../src/redis'; // Direct import of the default expor
 import { config } from '../../src/config';
 import { logger } from '../../src/utils/logger';
 import { normalizeTitle } from '../../src/parser/title'; // Import normalizeTitle
-import { fuzzyMatch } from '../../src/parser/title'; // Import fuzzyMatch
+import { fuzzyMatch } from '../../src/parser/title'; // Corrected import path for fuzzyMatch
 import { parseTitle } from '../../src/parser/title'; // Import parseTitle
 
 // In-memory cache for meta items to reduce Redis lookups
