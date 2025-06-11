@@ -1,12 +1,11 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { config } = require('../config');
-const redisClient = require('../redis'); // Import redisClient instance
-// Corrected import: 'hgetall' now refers to the wrapper function exported by redis.js
-const { hgetall, hset, hmset, zadd, zrangebyscore, del } = require('../redis');
-const { processThread, getUniqueThreadId } = require('./processor'); // Ensure processThread is imported
+const redisClient = require('../redis'); // Import redisClient instance directly
+// Removed destructured imports for specific Redis functions as they will be called directly on redisClient
+const { processThread, getUniqueThreadId } = require('./processor');
 const { logger } = require('../utils/logger');
-const { normalizeTitle, parseTitle } = require('../parser/title'); // Added import for normalizeTitle and parseTitle
+const { normalizeTitle, parseTitle } = require('../parser/title');
 
 /**
  * @typedef {object} MagnetData
@@ -190,34 +189,46 @@ async function crawlForumPage(pageNum) {
   for (const threadUrl of threadUrls) {
     const threadId = getUniqueThreadId(threadUrl);
     
-    // Use the imported hgetall from redis.js (which now calls redisClient.hgetall)
-    const lastProcessed = await hgetall(`thread:${threadId}`); 
-    const now = new Date().toISOString();
+    try {
+        // Direct call to redisClient.hgetall
+        const lastProcessed = await redisClient.hgetall(`thread:${threadId}`); 
+        const now = new Date().toISOString();
 
-    const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
-    const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
+        const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
+        const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
 
-    if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
-      logger.info(`Processing new or updated thread: ${threadUrl}`);
-      processingPromises.push(
-        (async () => {
-          const processedData = await processThread(threadUrl);
-          if (processedData) {
-            await saveThreadData(processedData);
-            await hmset(`thread:${processedData.threadId}`, {
-              url: threadUrl,
-              timestamp: now,
-              status: 'processed'
-            });
+        if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
+          logger.info(`Processing new or updated thread: ${threadUrl}`);
+          processingPromises.push(
+            (async () => {
+              const processedData = await processThread(threadUrl);
+              if (processedData) {
+                await saveThreadData(processedData);
+                // Direct call to redisClient.hmset
+                await redisClient.hmset(`thread:${processedData.threadId}`, {
+                  url: threadUrl,
+                  timestamp: now,
+                  status: 'processed'
+                });
+              }
+            })()
+          );
+          if (processingPromises.length >= config.MAX_CONCURRENCY) {
+            await Promise.all(processingPromises);
+            processingPromises.length = 0;
           }
-        })()
-      );
-      if (processingPromises.length >= config.MAX_CONCURRENCY) {
-        await Promise.all(processingPromises);
-        processingPromises.length = 0;
-      }
-    } else {
-      logger.info(`Thread ${threadUrl} recently processed. Skipping.`);
+        } else {
+          logger.info(`Thread ${threadUrl} recently processed. Skipping.`);
+        }
+    } catch (error) {
+        logger.error(`Error checking/processing thread ${threadUrl}:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error in crawlForumPage for thread: ${threadUrl}`,
+            error: error.message,
+            url: threadUrl
+        });
     }
   }
 
@@ -247,15 +258,27 @@ async function saveThreadData(data) {
   const stremioMovieId = `tt${normalizedTitle}`;
 
   const movieKey = `movie:${stremioMovieId}`;
-  await hmset(movieKey, {
-    originalTitle: title,
-    posterUrl: posterUrl,
-    stremioId: stremioMovieId,
-    lastUpdated: now.toISOString(),
-    associatedThreadId: threadId,
-    threadStartedTime: finalThreadStartedTime
-  });
-  logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${finalThreadStartedTime})`);
+  try {
+    // Direct call to redisClient.hmset
+    await redisClient.hmset(movieKey, {
+      originalTitle: title,
+      posterUrl: posterUrl,
+      stremioId: stremioMovieId,
+      lastUpdated: now.toISOString(),
+      associatedThreadId: threadId,
+      threadStartedTime: finalThreadStartedTime
+    });
+    logger.info(`Saved movie data for ${movieKey} (Stremio ID: ${stremioMovieId}, Started: ${finalThreadStartedTime})`);
+  } catch (error) {
+    logger.error(`Error saving movie data for ${movieKey}:`, error);
+    logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        message: `Error saving movie data for key: ${movieKey}`,
+        error: error.message,
+        url: originalUrl
+    });
+  }
 
 
   const { season, episodeStart, episodeEnd, languages } = parseTitle(title);
@@ -282,31 +305,67 @@ async function saveThreadData(data) {
     const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount);
     const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${infoHash}`;
 
-    await hmset(episodeKey, {
-      infoHash: infoHash,
-      sources: JSON.stringify(cachedBestTrackers),
-      name: streamName,
-      title: streamTitle,
-      size: magnet.size || '',
-      resolution: magnet.resolution || '',
-      timestamp: now.toISOString(),
-      threadUrl: originalUrl,
-      stremioMovieId: stremioMovieId
+    try {
+        // Direct call to redisClient.hmset
+        await redisClient.hmset(episodeKey, {
+          infoHash: infoHash,
+          sources: JSON.stringify(cachedBestTrackers),
+          name: streamName,
+          title: streamTitle,
+          size: magnet.size || '',
+          resolution: magnet.resolution || '',
+          timestamp: now.toISOString(),
+          threadUrl: originalUrl,
+          stremioMovieId: stremioMovieId
+        });
+        logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}", Title: "${streamTitle}")`);
+    } catch (error) {
+        logger.error(`Error saving stream data for ${episodeKey}:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error saving stream data for key: ${episodeKey}`,
+            error: error.message,
+            url: originalUrl
+        });
+    }
+  }
+
+  try {
+    if (languages && languages.length > 0) {
+      // Direct call to redisClient.hgetall and redisClient.hset
+      const existingLanguagesString = await redisClient.hgetall(movieKey).then(data => data.languages);
+      const existingLanguages = existingLanguagesString ? existingLanguagesString.split(',') : [];
+      const mergedLanguages = Array.from(new Set([...existingLanguages, ...languages]));
+      await redisClient.hset(movieKey, 'languages', mergedLanguages.join(','));
+    }
+  } catch (error) {
+    logger.error(`Error updating languages for movie ${movieKey}:`, error);
+    logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        message: `Error updating languages for movie: ${movieKey}`,
+        error: error.message,
+        url: originalUrl
     });
-    logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}", Title: "${streamTitle}")`);
   }
 
-  if (languages && languages.length > 0) {
-    const existingLanguagesString = await hgetall(movieKey).then(data => data.languages);
-    const existingLanguages = existingLanguagesString ? existingLanguagesString.split(',') : [];
-    const mergedLanguages = Array.from(new Set([...existingLanguages, ...languages]));
-    await hset(movieKey, 'languages', mergedLanguages.join(','));
+  try {
+    // Direct call to redisClient.hgetall and redisClient.hset
+    const existingSeasonsString = await redisClient.hgetall(movieKey).then(data => data.seasons);
+    const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
+    const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
+    await redisClient.hset(movieKey, 'seasons', mergedSeasons.join(','));
+  } catch (error) {
+    logger.error(`Error updating seasons for movie ${movieKey}:`, error);
+    logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        message: `Error updating seasons for movie: ${movieKey}`,
+        error: error.message,
+        url: originalUrl
+    });
   }
-
-  const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
-  const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
-  const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
-  await hset(movieKey, 'seasons', mergedSeasons.join(','));
 }
 
 /**
@@ -336,51 +395,84 @@ async function crawlNewPages() {
  */
 async function revisitExistingThreads() {
   logger.info('Starting existing thread revisit...');
-  const threadKeys = await redisClient.keys('thread:*');
+  try {
+    // Direct call to redisClient.keys
+    const threadKeys = await redisClient.keys('thread:*');
 
-  const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
-  const now = Date.now(); 
+    const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
+    const now = Date.now(); 
 
-  const threadsToRevisit = [];
+    const threadsToRevisit = [];
 
-  for (const key of threadKeys) {
-    // Use the imported hgetall from redis.js
-    const threadData = await hgetall(key);
-    if (threadData.timestamp) {
-      const lastProcessedTime = new Date(threadData.timestamp).getTime();
-      if (now - lastProcessedTime > revisitThreshold) {
-        threadsToRevisit.push(threadData.url);
-      }
-    } else {
-      if (threadData.url) {
-        threadsToRevisit.push(threadData.url);
-      }
-    }
-  }
-
-  const processingPromises = [];
-  for (const threadUrl of threadsToRevisit) {
-    processingPromises.push(
-      (async () => {
-        const processedData = await processThread(threadUrl);
-        if (processedData) {
-          await saveThreadData(processedData);
-          const threadId = getUniqueThreadId(threadUrl);
-          await hmset(`thread:${threadId}`, {
-            url: threadUrl,
-            timestamp: new Date().toISOString(),
-            status: 'processed'
-          });
+    for (const key of threadKeys) {
+      try {
+        // Direct call to redisClient.hgetall
+        const threadData = await redisClient.hgetall(key);
+        if (threadData.timestamp) {
+          const lastProcessedTime = new Date(threadData.timestamp).getTime();
+          if (now - lastProcessedTime > revisitThreshold) {
+            threadsToRevisit.push(threadData.url);
+          }
+        } else {
+          if (threadData.url) {
+            threadsToRevisit.push(threadData.url);
+          }
         }
-      })()
-    );
-    if (processingPromises.length >= config.MAX_CONCURRENCY) {
-      await Promise.all(processingPromises);
-      processingPromises.length = 0;
+      } catch (error) {
+        logger.error(`Error fetching thread data for key ${key} during revisit check:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error fetching thread data for key ${key} during revisit check`,
+            error: error.message,
+            url: key // Using key as URL context
+        });
+      }
     }
+
+    const processingPromises = [];
+    for (const threadUrl of threadsToRevisit) {
+      processingPromises.push(
+        (async () => {
+          try {
+            const processedData = await processThread(threadUrl);
+            if (processedData) {
+              await saveThreadData(processedData);
+              // Direct call to redisClient.hmset
+              await redisClient.hmset(`thread:${processedData.threadId}`, {
+                url: threadUrl,
+                timestamp: new Date().toISOString(),
+                status: 'processed'
+              });
+            }
+          } catch (error) {
+            logger.error(`Error processing revisited thread ${threadUrl}:`, error);
+            logger.logToRedisErrorQueue({
+                timestamp: new Date().toISOString(),
+                level: 'ERROR',
+                message: `Error processing revisited thread: ${threadUrl}`,
+                error: error.message,
+                url: threadUrl
+            });
+          }
+        })()
+      );
+      if (processingPromises.length >= config.MAX_CONCURRENCY) {
+        await Promise.all(processingPromises);
+        processingPromises.length = 0;
+      }
+    }
+    await Promise.all(processingPromises);
+    logger.info(`Revisited ${threadsToRevisit.length} existing threads.`);
+  } catch (error) {
+    logger.error('Error in revisitExistingThreads:', error);
+    logger.logToRedisErrorQueue({
+        timestamp: new Date().toISOString(),
+        level: 'ERROR',
+        message: 'Error in revisitExistingThreads',
+        error: error.message
+    });
   }
-  await Promise.all(processingPromises);
-  logger.info(`Revisited ${threadsToRevisit.length} existing threads.`);
 }
 
 /**
@@ -395,25 +487,70 @@ function startCrawler() {
   isCrawling = true;
   logger.info('Stremio Addon Crawler started.');
 
+  // Initial calls wrapped in an async IIFE to ensure they are awaited
   (async () => {
-    await fetchAndCacheBestTrackers();
-    await crawlNewPages();
-    await revisitExistingThreads();
+    try {
+        await redisClient.purgeRedis(); // Assuming purgeRedis is still exported directly from redis.js
+        await fetchAndCacheBestTrackers();
+        await crawlNewPages();
+        await revisitExistingThreads();
+    } catch (error) {
+        logger.error('Error during initial crawler startup:', error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: 'Error during initial crawler startup',
+            error: error.message
+        });
+    }
   })();
 
+  // Schedule new page crawls
   setInterval(async () => {
     logger.info('Scheduled crawl for new pages triggered.');
-    await crawlNewPages();
+    try {
+        await crawlNewPages();
+    } catch (error) {
+        logger.error('Error during scheduled new page crawl:', error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: 'Error during scheduled new page crawl',
+            error: error.message
+        });
+    }
   }, config.CRAWL_INTERVAL * 1000);
 
+  // Schedule existing thread revisits
   setInterval(async () => {
     logger.info('Scheduled revisit for existing threads triggered.');
-    await revisitExistingThreads();
+    try {
+        await revisitExistingThreads();
+    } catch (error) {
+        logger.error('Error during scheduled revisit of existing threads:', error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: 'Error during scheduled revisit of existing threads',
+            error: error.message
+        });
+    }
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
 
+  // Schedule periodic tracker updates
   setInterval(async () => {
     logger.info('Scheduled best trackers update triggered.');
-    await fetchAndCacheBestTrackers();
+    try {
+        await fetchAndCacheBestTrackers();
+    } catch (error) {
+        logger.error('Error during scheduled best trackers update:', error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: 'Error during scheduled best trackers update',
+            error: error.message
+        });
+    }
   }, config.TRACKER_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
 }
 
