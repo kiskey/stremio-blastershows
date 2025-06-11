@@ -38,7 +38,7 @@ interface StremioStream {
 
 /**
  * Interface for the intermediate stream object used internally for sorting,
- * which includes the 'resolution' property.
+ * which includes the 'resolution' property and a calculated 'score'.
  */
 interface TempStreamWithResolution {
   name?: string;
@@ -46,6 +46,7 @@ interface TempStreamWithResolution {
   infoHash: string;
   sources?: string[];
   resolution?: string; // This is specifically for internal sorting, not exposed to Stremio
+  score: number; // New property for sorting
 }
 
 
@@ -278,7 +279,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
   try {
     const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
     
-    // Phase 1: Fetch data and create an intermediate structure that includes resolution for sorting
+    // Phase 1: Fetch data and create an intermediate structure that includes resolution AND score for sorting
     const intermediateStreams: (TempStreamWithResolution | null)[] = await Promise.all(streamKeys.map(async (key: string) => {
       const streamData = await redisClient.hgetall(key);
       if (!streamData) {
@@ -296,13 +297,17 @@ export async function streamHandler(type: string, id: string): Promise<any> {
         logger.error(`Failed to parse sources for key ${key}:`, e);
       }
 
-      // Create an intermediate object including the resolution for sorting
+      // Calculate the score for sorting based on resolution
+      const score = getResolutionValue(streamData.resolution);
+
+      // Create an intermediate object including the resolution and score for sorting
       const tempStreamWithResolution: TempStreamWithResolution = {
         name: streamData.name,
         title: streamData.title,
         infoHash: streamData.infoHash,
         sources: sourcesArray,
-        resolution: streamData.resolution // Keep resolution here for sorting
+        resolution: streamData.resolution, // Keep resolution here for internal sorting
+        score: score // Include the calculated score
       };
       
       // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
@@ -314,18 +319,15 @@ export async function streamHandler(type: string, id: string): Promise<any> {
       return tempStreamWithResolution;
     }));
 
-    // Phase 2: Filter out nulls and then sort the valid streams based on resolution
+    // Phase 2: Filter out nulls and then sort the valid streams directly by score
     const filteredAndSortedStreams: TempStreamWithResolution[] = intermediateStreams.filter((s): s is TempStreamWithResolution => s !== null);
 
     filteredAndSortedStreams.sort((a: TempStreamWithResolution, b: TempStreamWithResolution) => {
-      // Use the helper function for safe resolution value retrieval for sorting
-      const resA = getResolutionValue(a.resolution); // Access resolution directly from the intermediate object
-      const resB = getResolutionValue(b.resolution); // Access resolution directly from the intermediate object
-      
-      return resB - resA; // Descending order (higher resolution first)
+      // Direct comparison using the pre-calculated score
+      return b.score - a.score; // Descending order (higher score/resolution first)
     });
 
-    // Phase 3: Map to the final StremioStream interface, removing the internal 'resolution' field
+    // Phase 3: Map to the final StremioStream interface, removing the internal 'resolution' and 'score' fields
     const finalStremioStreams: StremioStream[] = filteredAndSortedStreams.map(s => ({
       name: s.name,
       title: s.title,
