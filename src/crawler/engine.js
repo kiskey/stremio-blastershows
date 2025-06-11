@@ -269,7 +269,8 @@ async function saveThreadData(data) {
   // Parse original thread title for detailed metadata
   const parsedThreadTitleMetadata = parseTitle(title);
   const { 
-    title: baseDisplayTitle, // Base title from thread, e.g., "The Flash (2014) S02 EP01-23"
+    baseShowName, // NEW: The very clean base show name
+    title: fullDisplayTitleForStream, // The full display title including episode for stream titles
     year: threadYear, 
     season: threadSeason, 
     episodeStart: threadEpisodeStart, 
@@ -287,13 +288,17 @@ async function saveThreadData(data) {
   const seasonNum = threadSeason || 1; // Default to Season 1 if not parsed
 
   // --- Create/Update "Movie Group" Catalog Entry (represents Series-Season) ---
-  // The originalTitle for the catalog item should be "Series Title (Year) SXX"
-  const cleanedBaseCatalogTitle = cleanBaseTitleForCatalog(baseDisplayTitle);
+  // The originalTitle for the catalog item should be "Base Title (Year) SXX"
+  // Use cleanBaseTitleForCatalog to explicitly construct the catalog title
+  const cleanedBaseCatalogTitle = cleanBaseTitleForCatalog(baseShowName, yearNum, seasonNum);
   const normalizedBaseCatalogId = normalizeTitle(cleanedBaseCatalogTitle);
   // This ID is for the catalog item itself, which groups streams
-  const stremioMovieGroupId = `tt${normalizedBaseCatalogId}-${yearNum}-s${seasonNum}`; 
+  const stremioMovieGroupId = `tt${normalizedBaseCatalogId}`; 
 
   const movieGroupKey = `movie:${stremioMovieGroupId}`; // Redis key for the movie group entry
+
+  // Log the identified Movie Key for Catalog
+  logger.info(`Identified Movie Key for Catalog: ${movieGroupKey} (Cleaned Title: "${cleanedBaseCatalogTitle}")`);
 
   try {
     const existingMovieGroupData = await redisClient.hgetall(movieGroupKey);
@@ -362,11 +367,15 @@ async function saveThreadData(data) {
 
     // Generate streamName and streamTitle using the specific cleaning functions
     const streamName = `TamilShows - ${streamResolution}`; // "TamilShows - resolution"
-    const streamTitle = cleanStreamDetailsTitle(magnet.name || baseDisplayTitle, streamResolution); // Cleaned episode title with quality postfix
+    // Use the fullDisplayTitleForStream from parseTitle, which includes episode info, for the stream title
+    const streamTitle = cleanStreamDetailsTitle(magnet.name || fullDisplayTitleForStream, streamResolution); 
 
     // The unique ID for this specific stream, linked to the movie_group ID
     const streamId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
     const streamDataKey = `stream:${streamId}`; // Redis key for the individual stream data
+
+    // Log the stream identified by the fuzzy logic (this is the streamKey)
+    logger.info(`Identified Stream Key: ${streamDataKey} (Stream Title: "${streamTitle}")`);
 
     try {
         await redisClient.hmset(streamDataKey, {
