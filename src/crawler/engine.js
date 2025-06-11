@@ -293,8 +293,7 @@ async function saveThreadData(data) {
   // This ID is for the catalog item itself, which groups streams
   const stremioMovieGroupId = `tt${normalizedBaseCatalogId}-${yearNum}-s${seasonNum}`; 
 
-  // CHANGED: Using 'movie:' prefix for the catalog item
-  const movieGroupKey = `movie:${stremioMovieGroupId}`; 
+  const movieGroupKey = `movie:${stremioMovieGroupId}`; // Redis key for the movie group entry
 
   try {
     const existingMovieGroupData = await redisClient.hgetall(movieGroupKey);
@@ -327,7 +326,7 @@ async function saveThreadData(data) {
       });
   }
 
-  // --- Process and save each magnet as a distinct "stream" entry ---
+  // --- Process and save each magnet as a distinct "stream_data" entry ---
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
@@ -367,8 +366,7 @@ async function saveThreadData(data) {
 
     // The unique ID for this specific stream, linked to the movie_group ID
     const streamId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
-    // CHANGED: Using 'stream:' prefix for the individual stream data
-    const streamDataKey = `stream:${streamId}`; 
+    const streamDataKey = `stream:${streamId}`; // Redis key for the individual stream data
 
     try {
         await redisClient.hmset(streamDataKey, {
@@ -377,7 +375,7 @@ async function saveThreadData(data) {
           sources: JSON.stringify(cachedBestTrackers),
           name: streamName, // "TamilShows - 1080p"
           title: streamTitle, // "Suits LA (2025) S01 EP11 - LQ"
-          size: magnet.size || (threadSizes.length > 0 ? threadSizes[0] : ''),
+          size: magnet.size || '',
           resolution: streamResolution,
           timestamp: now.toISOString(),
           threadUrl: originalUrl,
