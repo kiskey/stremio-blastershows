@@ -18,13 +18,13 @@ function getManifest() {
       "search"
     ],
     types: [
-      "series" // Changed back to "series"
+      "movie" // Changed to "movie" as per your instruction
     ],
     catalogs: [
       {
-        type: "series", // Changed back to "series"
-        id: "tamil-web-series", // Catalog ID for web series
-        name: "Tamil Web Series & TV Shows", // Updated name for clarity
+        type: "movie", // Changed to "movie" as per your instruction
+        id: "tamil-content", // More generic catalog ID for movie type
+        name: "Tamil Movies & Episodes", // Updated name for clarity with movie type
         extra: [
           { name: "search", isRequired: false },
           { name: "skip", isRequired: false }
