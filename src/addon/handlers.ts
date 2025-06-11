@@ -11,7 +11,6 @@ const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
 
 /**
  * Interface for a video item as stored in the meta object's videos array.
- * This resolves TS7018 and TS7006 for video and sort parameters.
  */
 interface VideoItem {
   id: string;
@@ -19,12 +18,10 @@ interface VideoItem {
   released: Date;
   season: number;
   episode: number;
-  // No stream properties here, as they are handled in streamHandler
 }
 
 /**
  * Interface for a Stremio stream object.
- * This resolves TS7006 for stream and sort parameters.
  */
 interface StremioStream {
   name?: string;
@@ -32,10 +29,10 @@ interface StremioStream {
   infoHash: string;
   sources?: string[];
   fileIdx?: number;
-  url?: string; // For direct URLs
-  ytId?: string; // For YouTube streams
-  externalUrl?: string; // For external links
-  resolution?: string; // Added for sorting purposes
+  url?: string;
+  ytId?: string;
+  externalUrl?: string;
+  resolution?: string; // Stored resolution for sorting
 }
 
 /**
@@ -73,7 +70,7 @@ export async function catalogHandler(type: string, id: string, extra: any): Prom
       movieKeys = await redisClient.keys('movie:*');
     }
 
-    const metas = await Promise.all(movieKeys.map(async (key: string) => { // Explicitly type 'key' as string
+    const metas = await Promise.all(movieKeys.map(async (key: string) => { // Explicitly type 'key'
       const movieData = await redisClient.hgetall(key);
       if (!movieData) {
         logger.warn(`Missing movie data for key: ${key}`);
@@ -86,17 +83,13 @@ export async function catalogHandler(type: string, id: string, extra: any): Prom
         type: 'series', // Assuming all content in this addon is 'series'
         name: movieData.originalTitle,
         poster: movieData.posterUrl,
-        // Ensure that poster is always a valid URL. If not, use a placeholder.
         posterShape: 'regular',
-        background: movieData.posterUrl, // Often same as poster, or a specific background image
-        // Add more details if available, e.g., year, genres, description
+        background: movieData.posterUrl,
         description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
-        // Stremio displays 'released' for movies and 'firstReleased' for series
         releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
         imdbRating: 'N/A', // No IMDB rating available from current source
         genres: movieData.languages ? movieData.languages.split(',') : [],
         // Specify available seasons if 'seasons' data is stored
-        // Stremio expects an array of season objects for type: 'series'
         videos: movieData.seasons ? JSON.parse(movieData.seasons).map((s: number) => ({ season: s })) : [],
       };
       
@@ -107,7 +100,7 @@ export async function catalogHandler(type: string, id: string, extra: any): Prom
     }));
 
     // Filter out any null entries (due to missing data) and sort by lastUpdated (newest first)
-    const filteredMetas = metas.filter(Boolean).sort((a: any, b: any) => { // Type 'a' and 'b' as any for now, as MetaPreviewObject is complex
+    const filteredMetas = metas.filter(Boolean).sort((a: any, b: any) => {
       const dateA = new Date(metaCache.get(a.id)?.lastUpdated || 0).getTime();
       const dateB = new Date(metaCache.get(b.id)?.lastUpdated || 0).getTime();
       return dateB - dateA; // Descending order (newest first)
@@ -155,7 +148,7 @@ export async function metaHandler(type: string, id: string): Promise<any> {
       return { meta: null };
     }
 
-    const meta = {
+    const meta: { id: string; type: string; name: string; poster: string; posterShape: string; background: string; description: string; releaseInfo: string; imdbRating: string; genres: string[]; videos: VideoItem[]; } = {
       id: movieData.stremioId,
       type: 'series',
       name: movieData.originalTitle,
@@ -166,13 +159,13 @@ export async function metaHandler(type: string, id: string): Promise<any> {
       releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
       imdbRating: 'N/A',
       genres: movieData.languages ? movieData.languages.split(',') : [],
-      videos: [], // Explicitly type 'videos' as VideoItem[]
-    } as { id: string; type: string; name: string; poster: string; posterShape: string; background: string; description: string; releaseInfo: string; imdbRating: string; genres: string[]; videos: VideoItem[]; };
+      videos: [], 
+    };
 
 
     // Fetch all episode streams for this movie/series
     const episodeKeys = await redisClient.keys(`episode:${id}:s*`);
-    const videos = await Promise.all(episodeKeys.map(async (key: string) => { // Explicitly type 'key' as string
+    const videos = await Promise.all(episodeKeys.map(async (key: string) => { // Explicitly type 'key'
       const episodeData = await redisClient.hgetall(key);
       if (!episodeData) {
         logger.warn(`Missing episode data for key: ${key}`);
@@ -193,7 +186,6 @@ export async function metaHandler(type: string, id: string): Promise<any> {
         released: episodeData.timestamp ? new Date(episodeData.timestamp) : new Date(),
         season: season,
         episode: episode,
-        // Stremio stream properties are handled in streamHandler
       } as VideoItem; // Assert type to VideoItem
     }));
 
@@ -239,7 +231,7 @@ export async function streamHandler(type: string, id: string): Promise<any> {
 
   try {
     const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
-    const streams = await Promise.all(streamKeys.map(async (key: string) => { // Explicitly type 'key' as string
+    const streams = await Promise.all(streamKeys.map(async (key: string) => { // Explicitly type 'key'
       const streamData = await redisClient.hgetall(key);
       if (!streamData) {
         logger.warn(`Missing stream data for key: ${key}`);
@@ -257,13 +249,13 @@ export async function streamHandler(type: string, id: string): Promise<any> {
       }
 
       // Construct Stremio stream object
-      const stream = {
+      const stream: StremioStream = { // Explicitly type 'stream'
         name: streamData.name, // "TamilShow - <Resolution>"
         title: streamData.title, // "Title | resolution | size"
         infoHash: streamData.infoHash, // Use infoHash from Redis
         sources: sourcesArray, // Use parsed sources array
         resolution: streamData.resolution // Include resolution for sorting
-      } as StremioStream; // Assert type to StremioStream
+      };
       
       // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
       if (!stream.infoHash) {
@@ -277,9 +269,12 @@ export async function streamHandler(type: string, id: string): Promise<any> {
     const filteredStreams = streams.filter(Boolean).sort((a: StremioStream, b: StremioStream) => { // Explicitly type 'a' and 'b'
       // Custom sorting for streams: high quality (resolution) to low quality.
       // Assuming resolutions like 4K, 1080p, 720p, 480p where higher numbers mean higher quality.
-      const resolutionOrder = { '4K': 4000, '1080p': 1080, '720p': 720, '480p': 480, 'unknown': 0 };
-      const resA = resolutionOrder[a.resolution as keyof typeof resolutionOrder] || 0;
-      const resB = resolutionOrder[b.resolution as keyof typeof resolutionOrder] || 0;
+      const resolutionOrder: { [key: string]: number } = { '4K': 4000, '1080p': 1080, '720p': 720, '480p': 480, 'unknown': 0 };
+      
+      // Safely access resolution, defaulting to 'unknown' if undefined
+      const resA = resolutionOrder[a.resolution ?? 'unknown'];
+      const resB = resolutionOrder[b.resolution ?? 'unknown'];
+      
       return resB - resA; // Descending order (higher resolution first)
     });
 
