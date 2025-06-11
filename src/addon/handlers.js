@@ -1,7 +1,7 @@
-const redisClient = require('../../src/redis'); // Direct require of the default exported redisClient instance
+const redisClient = require('../../src/redis'); // Import redisClient instance directly
 const { config } = require('../../src/config');
 const { logger } = require('../../src/utils/logger');
-const { normalizeTitle, fuzzyMatch } = require('../../src/parser/title'); // Import normalizeTitle and fuzzyMatch
+const { normalizeTitle, fuzzyMatch } = require('../../src/parser/title');
 
 // In-memory cache for meta items to reduce Redis lookups
 const metaCache = new Map();
@@ -28,33 +28,7 @@ const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
  * @property {string} [externalUrl]
  */
 
-/**
- * Maps resolution strings to numerical values for sorting purposes.
- * Higher values represent higher quality.
- * @type {Object.<string, number>}
- */
-const resolutionOrder = {
-  '4K': 4000,
-  '1080p': 1080,
-  '720p': 720,
-  '480p': 480,
-  'unknown': 0
-};
-
-/**
- * Helper function to get the numerical value of a resolution for sorting.
- * @param {string|undefined} resolution The resolution string (e.g., '1080p', '4K'), or undefined.
- * @returns {number} The numerical value for sorting, or 0 if unknown.
- */
-function getResolutionValue(resolution) {
-  let keyToUse;
-  if (typeof resolution === 'string' && Object.prototype.hasOwnProperty.call(resolutionOrder, resolution)) {
-    keyToUse = resolution;
-  } else {
-    keyToUse = 'unknown';
-  }
-  return resolutionOrder[keyToUse];
-}
+// Removed resolutionOrder map and getResolutionValue helper function (not used for sorting anymore)
 
 
 /**
@@ -90,29 +64,39 @@ async function catalogHandler(type, id, extra) {
     }
 
     const metas = await Promise.all(movieKeys.map(async (key) => {
-      const movieData = await redisClient.hgetall(key);
-      if (!movieData) {
-        logger.warn(`Missing movie data for key: ${key}`);
+      try {
+        const movieData = await redisClient.hgetall(key);
+        if (!movieData) {
+          logger.warn(`Missing movie data for key: ${key}`);
+          return null;
+        }
+
+        const meta = {
+          id: movieData.stremioId,
+          type: 'series',
+          name: movieData.originalTitle,
+          poster: movieData.posterUrl,
+          posterShape: 'regular',
+          background: movieData.posterUrl,
+          description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
+          releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
+          imdbRating: 'N/A',
+          genres: movieData.languages ? movieData.languages.split(',') : [],
+          videos: movieData.seasons ? JSON.parse(movieData.seasons).map(s => ({ season: s })) : [],
+        };
+        
+        metaCache.set(meta.id, meta);
+        return meta;
+      } catch (error) {
+        logger.error(`Error processing movie data for key ${key} in catalogHandler:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error processing movie data for catalog key: ${key}`,
+            error: error.message
+        });
         return null;
       }
-
-      const meta = {
-        id: movieData.stremioId,
-        type: 'series',
-        name: movieData.originalTitle,
-        poster: movieData.posterUrl,
-        posterShape: 'regular',
-        background: movieData.posterUrl,
-        description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
-        releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
-        imdbRating: 'N/A',
-        genres: movieData.languages ? movieData.languages.split(',') : [],
-        videos: movieData.seasons ? JSON.parse(movieData.seasons).map(s => ({ season: s })) : [],
-      };
-      
-      metaCache.set(meta.id, meta);
-
-      return meta;
     }));
 
     const filteredMetas = metas.filter(Boolean).sort((a, b) => {
@@ -178,26 +162,37 @@ async function metaHandler(type, id) {
 
     const episodeKeys = await redisClient.keys(`episode:${id}:s*`);
     const videos = await Promise.all(episodeKeys.map(async (key) => {
-      const episodeData = await redisClient.hgetall(key);
-      if (!episodeData) {
-        logger.warn(`Missing episode data for key: ${key}`);
+      try {
+        const episodeData = await redisClient.hgetall(key);
+        if (!episodeData) {
+          logger.warn(`Missing episode data for key: ${key}`);
+          return null;
+        }
+        
+        const parts = key.split(':');
+        const seasonMatch = parts[2]?.match(/s(\d+)/);
+        const episodeMatch = parts[3]?.match(/e(\d+)/);
+
+        const season = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
+        const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : 1;
+
+        return {
+          id: key,
+          title: episodeData.title,
+          released: episodeData.timestamp ? new Date(episodeData.timestamp) : new Date(),
+          season: season,
+          episode: episode,
+        };
+      } catch (error) {
+        logger.error(`Error processing episode data for key ${key} in metaHandler:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error processing episode data for meta key: ${key}`,
+            error: error.message
+        });
         return null;
       }
-      
-      const parts = key.split(':');
-      const seasonMatch = parts[2]?.match(/s(\d+)/);
-      const episodeMatch = parts[3]?.match(/e(\d+)/);
-
-      const season = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
-      const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : 1;
-
-      return {
-        id: key,
-        title: episodeData.title,
-        released: episodeData.timestamp ? new Date(episodeData.timestamp) : new Date(),
-        season: season,
-        episode: episode,
-      };
     }));
 
     meta.videos = videos.filter(Boolean).sort((a, b) => {
@@ -240,35 +235,52 @@ async function streamHandler(type, id) {
     
     // Fetch data and create stream objects directly
     const streams = await Promise.all(streamKeys.map(async (key) => {
-      const streamData = await redisClient.hgetall(key);
-      if (!streamData) {
-        logger.warn(`Missing stream data for key: ${key}`);
+      try {
+        const streamData = await redisClient.hgetall(key);
+        if (!streamData) {
+          logger.warn(`Missing stream data for key: ${key}`);
+          return null;
+        }
+
+        let sourcesArray = [];
+        try {
+          if (streamData.sources) {
+            sourcesArray = JSON.parse(streamData.sources);
+          }
+        } catch (e) {
+          logger.error(`Failed to parse sources for key ${key}:`, e);
+          logger.logToRedisErrorQueue({
+              timestamp: new Date().toISOString(),
+              level: 'ERROR',
+              message: `Failed to parse sources JSON for key: ${key}`,
+              error: e.message
+          });
+        }
+
+        // Construct Stremio stream object directly
+        const stream = { 
+          name: streamData.name,
+          title: streamData.title,
+          infoHash: streamData.infoHash,
+          sources: sourcesArray,
+        };
+        
+        if (!stream.infoHash) {
+            logger.warn(`Stream for key ${key} has no infoHash. Skipping.`);
+            return null;
+        }
+
+        return stream;
+      } catch (error) {
+        logger.error(`Error processing stream data for key ${key} in streamHandler:`, error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error processing stream data for key: ${key}`,
+            error: error.message
+        });
         return null;
       }
-
-      let sourcesArray = [];
-      try {
-        if (streamData.sources) {
-          sourcesArray = JSON.parse(streamData.sources);
-        }
-      } catch (e) {
-        logger.error(`Failed to parse sources for key ${key}:`, e);
-      }
-
-      // Construct Stremio stream object directly
-      const stream = { 
-        name: streamData.name,
-        title: streamData.title,
-        infoHash: streamData.infoHash,
-        sources: sourcesArray,
-      };
-      
-      if (!stream.infoHash) {
-          logger.warn(`Stream for key ${key} has no infoHash. Skipping.`);
-          return null;
-      }
-
-      return stream;
     }));
 
     // Filter out nulls. No sorting by resolution here as per request.
