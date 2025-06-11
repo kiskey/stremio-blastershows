@@ -536,6 +536,14 @@ function startCrawler() {
     logger.info('Scheduled revisit for existing threads triggered.');
     try {
         await revisitExistingThreads();
+    } catch (error) { // Added missing catch block
+        logger.error('Error during scheduled revisit of existing threads:', error);
+        logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: 'Error during scheduled revisit of existing threads',
+            error: error.message
+        });
     }
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
 
