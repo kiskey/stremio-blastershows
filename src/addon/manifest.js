@@ -17,12 +17,11 @@ function getManifest() {
       "search"
     ],
     types: [
-      "series" // Keeping as series as per earlier discussion, although catalog type was movie in the last TypeScript manifest.
-              // Reverted to "series" to match the initial intent for web series/TV shows.
+      "series" // Keeping as "series" as it aligns with parsing season/episode and catalog name
     ],
     catalogs: [
       {
-        type: "series", // Keeping as series here
+        type: "series", // Keeping as "series"
         id: "tamil-web-series", // Catalog ID for web series
         name: "Tamil Web Series & TV Shows", // Updated name for clarity
         extra: [
