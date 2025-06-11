@@ -8,7 +8,7 @@ const { config } = require('../config');
 function getManifest() {
   return {
     id: config.ADDON_ID,
-    version: "1.1.0", // Minor release to 1.1.0
+    version: "1.1.1", // Patch version incremented for this refinement
     name: config.ADDON_NAME,
     description: config.ADDON_DESCRIPTION,
     resources: [
@@ -18,13 +18,13 @@ function getManifest() {
       "search"
     ],
     types: [
-      "movie" // Explicitly keeping "movie" as per instruction
+      "movie" // STRICTLY keeping "movie" as per instruction
     ],
     catalogs: [
       {
-        type: "movie", // Explicitly keeping "movie"
-        id: "tamil-content", // More generic catalog ID for movies/episodes
-        name: "Tamil Movies & Episodes", // Name reflecting content
+        type: "movie", // STRICTLY keeping "movie"
+        id: "tamil-content", // Generic catalog ID for all "movie" content
+        name: "Tamil Movies & Episodes", // Name reflecting the mixed content
         extra: [
           { name: "search", isRequired: false },
           { name: "skip", isRequired: false }
