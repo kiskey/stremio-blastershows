@@ -12,7 +12,7 @@ import { normalizeTitle } from '../parser/title'; // Added import for normalizeT
  */
 export interface MagnetData {
   url: string;
-  name: string; // Full descriptive name from ipsAttachLink_title
+  name: string; // Full descriptive name from ipsAttachLink_title or magnet DN
   size?: string;
   resolution?: string; // Add resolution here
 }
@@ -201,7 +201,7 @@ async function crawlForumPage(pageNum: number): Promise<boolean> {
           }
         })()
       );
-      // Basic concurrency control (can be enhanced with a proper queue/worker pool)
+      // Basic concurrency concurrency control (can be enhanced with a proper queue/worker pool)
       if (processingPromises.length >= config.MAX_CONCURRENCY) {
         await Promise.all(processingPromises);
         processingPromises.length = 0; // Clear the array
@@ -242,6 +242,20 @@ function parseResolutionAndSizeFromMagnetName(magnetName: string): { resolution?
   return result;
 }
 
+
+/**
+ * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
+ * This is a helper function to ensure a consistent way to get BTIH from a magnet URI string.
+ * @param magnetUri The magnet URI string.
+ * @returns The 40-character BTIH as a string, or null if not found/invalid.
+ */
+function extractBtihFromMagnet(magnetUri: string): string | null {
+  const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return null;
+}
 
 /**
  * Saves processed thread data into Redis according to the defined schema.
@@ -298,25 +312,32 @@ async function saveThreadData(data: ThreadContent): Promise<void> {
       continue;
     }
 
+    // Extract BTIH for unique key generation
+    const btih = extractBtihFromMagnet(magnet.url);
+    if (!btih) {
+      logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${threadId}.`);
+      continue;
+    }
+
     // Now, magnet.name contains the full descriptive title and magnet.resolution is parsed.
     const streamName = `Tamilshow-${(magnet.resolution || 'unknown').toLowerCase()}`; // e.g., Tamilshow-1080p
     const streamTitle = magnet.name; // Use the full descriptive name as the stream title
 
-    // Episode keys include resolution for better uniqueness and filtering
-    const magnetHash = Buffer.from(magnet.url).toString('base64').substring(0, 10); // Short hash
-    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${(episodeStart || 1) + (i % episodeCount)}:${magnet.resolution || 'unknown'}:${magnetHash}`;
+    // Episode keys include resolution and the full BTIH for guaranteed uniqueness
+    const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount); // Handle multiple magnets for same episode, incrementing if needed
+    const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${btih}`;
 
     await hmset(episodeKey, {
       magnet: magnet.url,
       name: streamName, // Formatted as Tamilshow-resolution
-      title: streamTitle, // Full descriptive name
+      title: streamTitle, // Full descriptive name from processor.ts
       size: magnet.size || '', // Use size parsed in processor.ts
       resolution: magnet.resolution || '', // Use resolution parsed in processor.ts
       timestamp: now.toISOString(),
       threadUrl: originalUrl,
       stremioMovieId: stremioMovieId
     });
-    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}...)`);
+    logger.info(`Saved stream data for ${episodeKey} (Magnet: ${magnet.url.substring(0, 30)}..., Resolution: ${magnet.resolution || 'N/A'})`);
   }
 
   // Update languages for the movie hash if new languages are found
