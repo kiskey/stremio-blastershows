@@ -174,6 +174,9 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     threadStartedTime = new Date().toISOString();
   }
 
+  // Declare timestamp for when this thread was processed/last updated by the crawler
+  const timestamp = new Date().toISOString();
+
   // Generate a unique thread ID using the robust function
   const threadId = getUniqueThreadId(threadUrl);
 
@@ -203,7 +206,7 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
       } else if (magnetUrl) {
           logger.warn(`Invalid magnet URI or missing descriptive title for ${magnetUrl} in thread ${threadUrl}`);
           logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
+            timestamp: new Date().toISOString(), // Use current timestamp for error logging
             level: 'WARN',
             message: `Invalid magnet URI or missing title detected: ${magnetUrl}`,
             url: threadUrl
@@ -229,10 +232,10 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
     title: title,
     posterUrl: posterUrl,
     magnets: magnets,
-    timestamp: timestamp, // 'timestamp' is correctly declared above with 'let'
+    timestamp: timestamp, // Use the newly declared 'timestamp' for processing time
     threadId: threadId, // Ensure the correct unique ID is passed
     originalUrl: threadUrl,
-    threadStartedTime: threadStartedTime // Added threadStartedTime
+    threadStartedTime: threadStartedTime // Use the 'threadStartedTime' parsed from the forum
   };
 
   logger.info(`Processed thread ${threadUrl}: Title="${processedContent.title}", Magnets: ${processedContent.magnets.length}`);
