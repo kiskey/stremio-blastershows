@@ -165,6 +165,7 @@ function extractBtihFromMagnet(magnetUri: string): string | null {
 
 /**
  * Fetches the best trackers from ngosang's list and caches them.
+ * This function is modified to ensure explicit type handling for compiler stability.
  */
 async function fetchAndCacheBestTrackers(): Promise<void> {
   const now = Date.now();
@@ -179,11 +180,13 @@ async function fetchAndCacheBestTrackers(): Promise<void> {
   try {
     const response = await axios.get(config.NGOSANG_TRACKERS_URL);
     // Trackers are typically newline-separated
-    const rawTrackers = response.data.split('\n').map((t: string) => t.trim()).filter(Boolean);
+    const rawTrackers: string[] = response.data.split('\n');
 
-    // Format them as 'tracker:<URL>' and filter out non-HTTP/UDP ones if strict
-    // For Stremio, 'tracker:<url>' is the required format.
-    const formattedTrackers = rawTrackers.map((tracker: string) => `tracker:${tracker}`);
+    // Process and format trackers with explicit type filtering
+    const formattedTrackers: string[] = rawTrackers
+      .map((t: string) => t.trim()) // Trim whitespace from each tracker
+      .filter((tracker): tracker is string => !!tracker) // Explicitly filter out empty strings and assert type
+      .map((tracker: string) => `tracker:${tracker}`); // Format as 'tracker:<URL>'
     
     cachedBestTrackers = formattedTrackers;
     lastTrackerUpdate = now;
