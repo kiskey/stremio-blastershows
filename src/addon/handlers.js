@@ -38,7 +38,7 @@ const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
  * @param {string} id The catalog ID (e.g., 'tamil-web-series').
  * @param {object} extra Stremio extra parameters (e.g., search, skip).
  * @returns {Promise<object>} A Promise resolving to an array of meta objects.
- */
+*/
 async function catalogHandler(type, id, extra) {
   logger.info(`Received catalog request: type=${type}, id=${id}, extra=${JSON.stringify(extra)}`);
   
@@ -56,7 +56,8 @@ async function catalogHandler(type, id, extra) {
       const keys = await redisClient.keys('movie:*');
       for (const key of keys) {
         const movieData = await redisClient.hgetall(key);
-        if (movieData && fuzzyMatch(searchKeywords, normalizeTitle(movieData.originalTitle))) {
+        // Use movieData.title (reconstructed clean title) for fuzzy matching
+        if (movieData && fuzzyMatch(searchKeywords, movieData.originalTitle)) {
           movieKeys.push(key);
         }
       }
@@ -82,11 +83,11 @@ async function catalogHandler(type, id, extra) {
                     logger.warn(`movieData.seasons for ${key} was not an array after JSON.parse. Raw: ${movieData.seasons}`);
                 }
             } catch (parseError) {
-                logger.error(`Failed to parse seasons JSON for key ${key}:`, parseError);
+                logger.error(`Failed to parse seasons JSON for key ${key} in catalogHandler:`, parseError);
                 logger.logToRedisErrorQueue({
                     timestamp: new Date().toISOString(),
                     level: 'ERROR',
-                    message: `Failed to parse seasons JSON for key: ${key}`,
+                    message: `Failed to parse seasons JSON for key: ${key} in catalogHandler`,
                     error: parseError.message
                 });
             }
@@ -95,14 +96,14 @@ async function catalogHandler(type, id, extra) {
         const meta = {
           id: movieData.stremioId,
           type: 'series',
-          name: movieData.originalTitle,
+          name: movieData.originalTitle, // This should now be the reconstructed clean title
           poster: movieData.posterUrl,
           posterShape: 'regular',
           background: movieData.posterUrl,
           description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
           releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
           imdbRating: 'N/A',
-          genres: movieData.languages ? movieData.languages.split(',') : [],
+          genres: movieData.languages ? JSON.parse(movieData.languages) : [], // Parse languages as JSON array
           videos: parsedVideos, // Use the safely parsed videos array
         };
         
@@ -172,20 +173,24 @@ async function metaHandler(type, id) {
     const meta = {
       id: movieData.stremioId,
       type: 'series',
-      name: movieData.originalTitle,
+      name: movieData.originalTitle, // This should be the reconstructed clean title
       poster: movieData.posterUrl,
       posterShape: 'regular',
       background: movieData.posterUrl,
       description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
       releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
       imdbRating: 'N/A',
-      genres: movieData.languages ? movieData.languages.split(',') : [],
+      genres: movieData.languages ? JSON.parse(movieData.languages) : [], // Parse languages as JSON array
       videos: [], // Will be populated with episode details
     };
 
 
     // Fetch all episode streams for this movie/series using the standardized movie ID prefix
-    const episodeKeys = await redisClient.keys(`episode:${id}:s*`); // Keys now match the standardized movie ID
+    // The pattern matches `episode:<stremioMovieId>:<s<season>e<episode>>:<resolution>:<infoHash>`
+    const episodeKeys = await redisClient.keys(`episode:${id}:*`); // Use wildcard to get all episodes for this movie ID
+    logger.debug(`Found ${episodeKeys.length} episode keys for meta ID ${id}`);
+
+
     const videos = await Promise.all(episodeKeys.map(async (key) => {
       try {
         const episodeData = await redisClient.hgetall(key);
@@ -197,14 +202,9 @@ async function metaHandler(type, id) {
         // Parse season and episode from the episodeKey which includes standardized parts
         // e.g., episode:ttnormalizedtitle-year-sseasonnum:s<season>e<episode>:<resolution>:<infoHash>
         const parts = key.split(':');
-        // Corrected index for season/episode parsing assuming stremioMovieId is part[1] (movie:)
-        // and actual SxxExx is part[2]
-        // Example key: episode:ttshowtitle-2025-s1:s1e1:1080p:INFO_HASH
         // parts[0] = "episode"
-        // parts[1] = "ttshowtitle-2025-s1" (stremioMovieId)
-        // parts[2] = "s1e1" (season/episode)
-        // parts[3] = "1080p" (resolution)
-        // parts[4] = "INFO_HASH"
+        // parts[1] = "ttnormalizedtitle-year-sseasonnum" (stremioMovieId)
+        // parts[2] = "s<season>e<episode>" (season/episode part of the key)
         const seasonEpisodePart = parts[2]; // This should be like 's1e1'
         const seasonMatch = seasonEpisodePart?.match(/s(\d+)/); 
         const episodeMatch = seasonEpisodePart?.match(/e(\d+)/);
@@ -213,8 +213,8 @@ async function metaHandler(type, id) {
         const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : 1;
 
         return {
-          id: key, // Unique ID for the video (stream)
-          title: episodeData.title,
+          id: key, // IMPORTANT: The video ID passed to Stremio is the FULL Redis episodeKey
+          title: episodeData.title, // This should be the reconstructed stream title
           released: episodeData.timestamp ? new Date(episodeData.timestamp) : new Date(),
           season: season,
           episode: episode,
@@ -232,6 +232,7 @@ async function metaHandler(type, id) {
     }));
 
     meta.videos = videos.filter(Boolean).sort((a, b) => {
+      // Sort first by season, then by episode
       if (a.season !== b.season) {
         return a.season - b.season;
       }
@@ -257,67 +258,96 @@ async function metaHandler(type, id) {
 
 /**
  * Handles stream requests from Stremio.
+ * This function now expects the 'id' to be the full Redis episodeKey.
  * @param {string} type The type of content.
- * @param {string} id The ID of the content.
+ * @param {string} id The ID of the content (expected to be the full Redis episodeKey).
  * @returns {Promise<object>} A Promise resolving to an array of stream objects.
  */
 async function streamHandler(type, id) {
   logger.info(`Received stream request: type=${type}, id=${id}`);
 
-  // The 'id' for stream requests now directly corresponds to the full episodeKey,
-  // e.g., episode:ttnormalizedtitle-year-sseasonnum:s<season>e<episode>:<resolution>:<infoHash>
-  // We need to fetch the stream data for this exact key.
-  // The 'id' parameter is the full 'episodeKey' as stored in Redis.
+  // The 'id' parameter coming from Stremio should be the full episodeKey, as set in metaHandler.
+  // However, given previous issues, we need to handle the possibility that 'id' is just the stremioMovieId.
+  // If `id` starts with 'tt' and does not contain `episode:`, it's likely a stremioMovieId.
+  let targetEpisodeKeys = [];
 
-  try {
-    const streamData = await redisClient.hgetall(id); // Fetch using the full 'id' directly
-    if (!streamData) {
-      logger.warn(`Stream data not found for ID: ${id}.`);
-      return { streams: [] };
-    }
-
-    let sourcesArray = [];
-    try {
-      if (streamData.sources) {
-        sourcesArray = JSON.parse(streamData.sources);
+  if (id.startsWith('episode:tt')) {
+      // Stremio sent the full episodeKey, which is ideal.
+      targetEpisodeKeys.push(id);
+      logger.debug(`Stream request ID is full episode key: ${id}`);
+  } else if (id.startsWith('tt')) {
+      // Stremio sent the stremioMovieId. Find all associated episode keys.
+      logger.warn(`Stream request ID is stremioMovieId (${id}). Searching for all associated episode streams.`);
+      targetEpisodeKeys = await redisClient.keys(`episode:${id}:*`);
+      if (targetEpisodeKeys.length === 0) {
+          logger.warn(`No episode streams found for stremioMovieId: ${id}`);
+          return { streams: [] };
       }
-    } catch (e) {
-      logger.error(`Failed to parse sources for key ${id}:`, e);
-      logger.logToRedisErrorQueue({
-          timestamp: new Date().toISOString(),
-          level: 'ERROR',
-          message: `Failed to parse sources JSON for key: ${id}`,
-          error: e.message
-      });
-    }
-
-    // Construct Stremio stream object
-    const stream = { 
-      name: streamData.name,
-      title: streamData.title,
-      infoHash: streamData.infoHash,
-      sources: sourcesArray,
-      // fileIdx, url, ytId, externalUrl are optional and not currently stored/used
-    };
-    
-    if (!stream.infoHash) {
-        logger.warn(`Stream for ID ${id} has no infoHash. Skipping.`);
-        return { streams: [] }; // Return empty if no infoHash
-    }
-
-    logger.info(`Returning stream for ID: ${id}.`);
-    return { streams: [stream] }; // Return an array with the single stream
-  } catch (error) {
-    logger.error(`Error in streamHandler for ID ${id}:`, error);
-    logger.logToRedisErrorQueue({
-      timestamp: new Date().toISOString(),
-      level: 'ERROR',
-      message: `Error in streamHandler for ID: ${id}`,
-      error: error.message,
-      url: id
-    });
-    return { streams: [] };
+  } else {
+      logger.warn(`Unrecognized stream request ID format: ${id}`);
+      return { streams: [] };
   }
+
+  const streams = [];
+  for (const episodeKey of targetEpisodeKeys) {
+      try {
+          const streamData = await redisClient.hgetall(episodeKey); 
+          if (!streamData) {
+            logger.warn(`Stream data not found for key: ${episodeKey}.`);
+            continue; // Skip to next if data not found
+          }
+
+          let sourcesArray = [];
+          try {
+            if (streamData.sources) {
+              sourcesArray = JSON.parse(streamData.sources);
+            }
+          } catch (e) {
+            logger.error(`Failed to parse sources for key ${episodeKey}:`, e);
+            logger.logToRedisErrorQueue({
+                timestamp: new Date().toISOString(),
+                level: 'ERROR',
+                message: `Failed to parse sources JSON for key: ${episodeKey}`,
+                error: e.message
+            });
+          }
+
+          if (!streamData.infoHash) {
+              logger.warn(`Stream for key ${episodeKey} has no infoHash. Skipping.`);
+              logger.logToRedisErrorQueue({
+                  timestamp: new Date().toISOString(),
+                  level: 'WARN',
+                  message: `Stream key ${episodeKey} has no infoHash`,
+                  url: episodeKey
+              });
+              continue; // Skip if no infoHash
+          }
+
+          // Construct Stremio stream object
+          const stream = { 
+            name: streamData.name,
+            title: streamData.title,
+            infoHash: streamData.infoHash,
+            sources: sourcesArray,
+            // fileIdx, url, ytId, externalUrl are optional and not currently stored/used
+          };
+          
+          streams.push(stream);
+          logger.info(`Added stream for key: ${episodeKey}.`);
+      } catch (error) {
+          logger.error(`Error processing stream data for key ${episodeKey} in streamHandler:`, error);
+          logger.logToRedisErrorQueue({
+            timestamp: new Date().toISOString(),
+            level: 'ERROR',
+            message: `Error processing stream data for key: ${episodeKey}`,
+            error: error.message,
+            url: episodeKey
+          });
+      }
+  }
+
+  logger.info(`Returning ${streams.length} streams for ID: ${id}.`);
+  return { streams: streams }; 
 }
 
 /**
