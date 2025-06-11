@@ -252,34 +252,83 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
 }
 
 /**
- * Cleans a stream file name/display name to produce a concise title for catalog display.
- * This function will remove website domains, bracketed content, file extensions,
- * and common codec/quality strings, along with "TamilShow - resolution -" prefixes.
+ * Cleans a title to be used as the primary catalog entry for a series-season "movie".
+ * This removes episode numbers, quality/codec tags, sizes, subtitles, etc.,
+ * leaving just "Series Title (Year) SXX".
  *
- * Example: "TamilShow - 1080p - www.1TamilBlasters.earth - Cooku With Comali (2025) S06E05 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv - AVC - x264 - AAC"
- * Should become: "Cooku With Comali (2025) S06E05"
+ * @param {string} rawTitle The raw title string (e.g., from magnet name or parsed thread title).
+ * @returns {string} The cleaned series-season title for the catalog.
+ */
+function cleanBaseTitleForCatalog(rawTitle) {
+  if (!rawTitle) return '';
+
+  let cleaned = rawTitle;
+
+  // 1. Remove streamname prefix "TamilShow - resolution - "
+  cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
+
+  // 2. Remove website domains (e.g., www.1TamilBlasters.earth, www.example.com, .net, .org, .fi, etc.)
+  cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, '');
+
+  // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
+  cleaned = cleaned.replace(/\[.*?\]/g, '');
+
+  // 4. Remove episode indicators (EPXX, E XX, Episode XX) and resolution postfixes (- HD, - HQ, - LQ)
+  cleaned = cleaned.replace(/(?:EP(?:\d+(?:-\d+)?)|E\d+|Episode(?:s)?\s*\d+(?:-\d+)?|-\s*(?:HD|HQ|LQ))/gi, '');
+
+  // 5. Remove sizes (e.g., " - 600MB", " - 1.7GB")
+  cleaned = cleaned.replace(/\s*-\s*\d+\.?\d*\s*[KMGT]?B\b/gi, '');
+
+  // 6. Remove subtitle indicators (e.g., " - ESub]", " - ESub")
+  cleaned = cleaned.replace(/\s*-\s*ESub\b|\s*Subtitles?\b/gi, '');
+
+  // 7. Remove any file extensions (e.g., .mkv, .mp4, .avi) at the end of the string
+  cleaned = cleaned.replace(/\.\w{2,4}\s*$/, '');
+
+  // 8. Remove common codec/quality strings (case-insensitive)
+  const codecQualityPatterns = [
+      'AVC', 'x264', 'x265', 'HEVC', 'AAC', 'DD5\\.1', 'AC3', 'DTS', 'HDRip',
+      'WEB-DL', 'BluRay', 'HDTV', 'WEBRip', 'BDRip', 'DVDRip', 'UNTOUCHED',
+      'HDR', 'DDP', 'WEB', 'RIP', 'BR'
+  ];
+  // Using a negative lookbehind to avoid matching patterns that are part of actual words unless explicitly a separator
+  const regex = new RegExp(`(?:\\s*[-+ ]*\\b(?:${codecQualityPatterns.join('|')})\\b)*`, 'gi');
+  cleaned = cleaned.replace(regex, '');
+
+  // 9. Remove stray punctuation or multiple spaces, and trim
+  // Keep year parentheses
+  cleaned = cleaned.replace(/[-\+]/g, ' '); // Replace hyphens/pluses with single space
+  cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses
+  cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
+  cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens/spaces
+
+  return cleaned;
+}
+
+
+/**
+ * Cleans a stream file name/display name to produce a concise title for individual stream display.
+ * This function retains episode information and adds a resolution postfix.
  *
  * @param {string} fileName The stream file name or display name.
- * @returns {string} The cleaned title for catalog display.
+ * @param {string} [resolution] The resolution (e.g., "1080p", "720p") for postfixing.
+ * @returns {string} The cleaned episode stream title.
  */
-function cleanStreamFileNameForCatalogTitle(fileName) {
+function cleanStreamDetailsTitle(fileName, resolution) {
     if (!fileName) return '';
 
     let cleaned = fileName;
 
-    // 1. Remove streamname prefix "TamilShow - resolution - " (e.g., "TamilShow - 1080p - ")
-    // This targets both "TamilShow - XXXp -" and "TamilShow - Unknown Res -"
-    cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
-
-    // 2. Remove website domains (e.g., www.1TamilBlasters.earth, www.example.com, .net, .org, .fi, etc.)
-    // More robust pattern to catch various TLDs and subdomains.
+    // 1. Remove website domains (e.g., www.1TamilBlasters.earth)
     cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, '');
+
+    // 2. Remove streamname prefix "TamilShow - resolution - "
+    cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
 
     // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
     cleaned = cleaned.replace(/\[.*?\]/g, '');
 
-    // 4. Remove sizes (e.g., " - 600MB", " - 1.7GB") - specifically target trailing sizes
-    // Ensure it's preceded by a space or hyphen to avoid removing valid title parts
+    // 4. Remove sizes (e.g., " - 600MB", " - 1.7GB")
     cleaned = cleaned.replace(/\s*-\s*\d+\.?\d*\s*[KMGT]?B\b/gi, '');
 
     // 5. Remove subtitle indicators (e.g., " - ESub]", " - ESub")
@@ -288,34 +337,40 @@ function cleanStreamFileNameForCatalogTitle(fileName) {
     // 6. Remove any file extensions (e.g., .mkv, .mp4, .avi) at the end of the string
     cleaned = cleaned.replace(/\.\w{2,4}\s*$/, '');
 
-    // 7. Remove common codec/quality strings that might remain (case-insensitive)
+    // 7. Remove common codec/quality strings (case-insensitive)
     const codecQualityPatterns = [
         'AVC', 'x264', 'x265', 'HEVC', 'AAC', 'DD5\\.1', 'AC3', 'DTS', 'HDRip',
         'WEB-DL', 'BluRay', 'HDTV', 'WEBRip', 'BDRip', 'DVDRip', 'UNTOUCHED',
         'HDR', 'DDP', 'WEB', 'RIP', 'BR'
     ];
-    // This regex looks for optional preceding hyphens/spaces and then the pattern, globally.
-    // It's designed to remove these as standalone tags.
     const regex = new RegExp(`(?:\\s*[-+ ]*\\b(?:${codecQualityPatterns.join('|')})\\b)*`, 'gi');
     cleaned = cleaned.replace(regex, '');
 
-    // 8. Remove stray hyphens, pluses, parentheses or any other non-alphanumeric, non-space character
-    // that might remain after specific removals, ensuring not to split actual words.
-    // We explicitly allow spaces and alphanumeric characters to prevent splitting words.
-    // Allow standard parentheses for years/season/episode numbers which are often appended later.
-    cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, '');
-
-    // 9. Final cleanup: reduce multiple spaces to single, then trim leading/trailing spaces/hyphens
-    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    // 8. Remove stray punctuation or multiple spaces, and trim
+    cleaned = cleaned.replace(/[-\+]/g, ' '); // Replace hyphens/pluses with single space
+    cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses
+    cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
     cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens/spaces
+
+    // 9. Append resolution postfix
+    if (resolution) {
+        const resolutionNum = parseInt(resolution, 10);
+        if (resolution === '1080p' || resolution.toLowerCase() === '4k') {
+            cleaned += ' - HD';
+        } else if (resolution === '720p') {
+            cleaned += ' - HQ';
+        } else if (resolutionNum <= 480) {
+            cleaned += ' - LQ';
+        }
+    }
 
     return cleaned;
 }
-
 
 module.exports = {
   normalizeTitle,
   parseTitle,
   fuzzyMatch,
-  cleanStreamFileNameForCatalogTitle // Export the new function
+  cleanBaseTitleForCatalog, // New function for catalog name
+  cleanStreamDetailsTitle // Adjusted function for stream title
 };
