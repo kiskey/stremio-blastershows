@@ -1,212 +1,272 @@
-import type { CatalogResponse, MetaResponse, StreamResponse, DiscoverableItem, Stream } from 'stremio-addon-sdk';
-import { hgetall, zrangebyscore } from '../redis';
-import { config } from '../config';
-import { parseStremioId } from '../utils/stremioIdParser';
-import { normalizeTitle } from '../parser/title';
-import { logger } from '../utils/logger'; // Import the centralized logger
-import redisClient from '../redis'; // Import redisClient for direct use
+import { getRedisClient } from '../../src/redis'; // Path correction for redis client
+import { config } from '../../src/config';
+import { logger } from '../../src/utils/logger';
+import { normalizeTitle } from '../../src/parser/title'; // Import normalizeTitle
+import { fuzzyMatch } from '../../src/parser/title'; // Import fuzzyMatch
+import { parseTitle } from '../../src/parser/title'; // Import parseTitle
+
+const redisClient = getRedisClient();
+
+// In-memory cache for meta items to reduce Redis lookups
+const metaCache = new Map<string, any>();
+const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
 
 /**
- * Handles Stremio catalog requests.
- * Fetches and returns a list of movies for the catalog.
- * @param type The type of content (must be 'movie').
- * @param id The catalog ID (e.g., 'tamil-web-movies').
- * @param genre The genre filter (not used in current spec, but good to have).
- * @param skip The number of items to skip for pagination.
- * @param search The search query for catalog filtering.
- * @returns A Promise resolving to a CatalogResponse.
+ * Handles catalog requests from Stremio.
+ * This fetches movie/series metadata from Redis to display in the Stremio UI.
+ * @param type The type of catalog (e.g., 'series').
+ * @param id The catalog ID (e.g., 'tamil-web-series').
+ * @param extra Stremio extra parameters (e.g., search, skip).
+ * @returns A Promise resolving to an array of meta objects.
  */
-export async function getCatalog(
-  type: string,
-  id: string,
-  genre?: string,
-  skip: number = 0,
-  searchQuery?: string
-): Promise<CatalogResponse> {
-  logger.info(`Received catalog request: type=${type}, id=${id}, genre=${genre}, skip=${skip}, search=${searchQuery}`);
-
-  if (type !== 'movie' || id !== 'tamil-web-movies') { // Changed type and id checks
-    logger.warn(`Invalid catalog request: type=${type}, id=${id}`);
-    return { metas: [] }; // Return empty if catalog ID doesn't match
+export async function catalogHandler(type: string, id: string, extra: any): Promise<any> {
+  logger.info(`Received catalog request: type=${type}, id=${id}, extra=${JSON.stringify(extra)}`);
+  
+  if (type !== 'series' || id !== 'tamil-web-series') {
+    logger.warn(`Unsupported catalog request: type=${type}, id=${id}`);
+    return { metas: [] };
   }
 
-  // Fetch all movie keys from Redis. These keys are now based on stremioMovieId: movie:<stremioMovieId>
-  const movieKeys = await redisClient.keys('movie:*');
-  let allMovies: (DiscoverableItem & { threadStartedTime?: string })[] = []; // Add threadStartedTime for sorting
+  let movieKeys: string[] = [];
+  const searchKeywords = extra.search ? normalizeTitle(extra.search) : null;
 
-  for (const key of movieKeys) {
-    const movieData = await hgetall(key); // Fetch data for movie:<stremioMovieId>
-    if (Object.keys(movieData).length > 0 && movieData.stremioId && movieData.originalTitle) {
-      // Use the stored stremioId and originalTitle
-      const stremioId = movieData.stremioId;
-      const originalTitle = movieData.originalTitle;
-      const posterUrl = movieData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(originalTitle || 'No Poster')}`;
-      allMovies.push({
-        id: stremioId,
-        name: originalTitle,
-        type: 'movie', // Always 'movie' type for catalog display
-        poster: posterUrl,
-        threadStartedTime: movieData.threadStartedTime // Add for sorting
-      });
+  try {
+    if (searchKeywords) {
+      logger.info(`Performing search for: ${searchKeywords}`);
+      // When searching, find keys that match the normalized search keywords
+      const keys = await redisClient.keys('movie:*');
+      for (const key of keys) {
+        const movieData = await redisClient.hgetall(key);
+        if (movieData && fuzzyMatch(searchKeywords, normalizeTitle(movieData.originalTitle))) {
+          movieKeys.push(key);
+        }
+      }
+    } else {
+      // For general catalog, fetch all movie keys
+      movieKeys = await redisClient.keys('movie:*');
     }
+
+    const metas = await Promise.all(movieKeys.map(async (key) => {
+      const movieData = await redisClient.hgetall(key);
+      if (!movieData) {
+        logger.warn(`Missing movie data for key: ${key}`);
+        return null;
+      }
+
+      // Populate meta object based on Stremio's Meta Preview Object structure
+      const meta = {
+        id: movieData.stremioId,
+        type: 'series', // Assuming all content in this addon is 'series'
+        name: movieData.originalTitle,
+        poster: movieData.posterUrl,
+        // Ensure that poster is always a valid URL. If not, use a placeholder.
+        posterShape: 'regular',
+        background: movieData.posterUrl, // Often same as poster, or a specific background image
+        // Add more details if available, e.g., year, genres, description
+        description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
+        // Stremio displays 'released' for movies and 'firstReleased' for series
+        releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
+        imdbRating: 'N/A', // No IMDB rating available from current source
+        genres: movieData.languages ? movieData.languages.split(',') : [],
+        // Specify available seasons if 'seasons' data is stored
+        // Stremio expects an array of season objects for type: 'series'
+        videos: movieData.seasons ? JSON.parse(movieData.seasons).map((s: number) => ({ season: s })) : [],
+      };
+      
+      // Cache the meta item
+      metaCache.set(meta.id, meta);
+
+      return meta;
+    }));
+
+    // Filter out any null entries (due to missing data) and sort by lastUpdated (newest first)
+    const filteredMetas = metas.filter(Boolean).sort((a, b) => {
+      const dateA = new Date(metaCache.get(a.id)?.lastUpdated || 0).getTime();
+      const dateB = new Date(metaCache.get(b.id)?.lastUpdated || 0).getTime();
+      return dateB - dateA; // Descending order (newest first)
+    });
+
+    logger.info(`Returning ${filteredMetas.length} catalog items.`);
+    return { metas: filteredMetas };
+  } catch (error) {
+    logger.error('Error in catalogHandler:', error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Error in catalogHandler for type=${type}, id=${id}`,
+      error: (error as Error).message
+    });
+    return { metas: [] };
   }
-
-  // Apply search filtering if a query is present
-  if (searchQuery) {
-    const normalizedSearchQuery = normalizeTitle(searchQuery);
-    allMovies = allMovies.filter(movie =>
-      normalizeTitle(movie.name).includes(normalizedSearchQuery)
-    );
-    logger.debug(`Catalog search for "${searchQuery}" returned ${allMovies.length} results.`);
-  }
-
-  // Sort by threadStartedTime in descending order (latest first)
-  allMovies.sort((a, b) => {
-    const dateA = new Date(a.threadStartedTime || 0).getTime();
-    const dateB = new Date(b.threadStartedTime || 0).getTime();
-    return dateB - dateA; // Descending order
-  });
-
-  const paginatedMovies = allMovies.slice(skip, skip + 100); // Limit to 100 items per page
-
-  logger.info(`Returning ${paginatedMovies.length} items for catalog. Total available: ${allMovies.length}`);
-  return { metas: paginatedMovies };
 }
 
 /**
- * Handles Stremio metadata requests for a specific movie (which is a show/series).
- * For 'movie' type, this typically provides details for the single movie entity.
- * @param type The type of content (must be 'movie').
- * @param id The Stremio ID of the movie (e.g., 'ttnormalizedtitle').
- * @returns A Promise resolving to a MetaResponse.
+ * Handles meta requests from Stremio.
+ * This fetches detailed metadata for a specific movie/series.
+ * @param type The type of content.
+ * @param id The ID of the content.
+ * @returns A Promise resolving to a meta object.
  */
-export async function getMeta(type: string, id: string): Promise<MetaResponse> {
+export async function metaHandler(type: string, id: string): Promise<any> {
   logger.info(`Received meta request: type=${type}, id=${id}`);
-
-  if (type !== 'movie') { // Changed type check
-    logger.warn(`Invalid meta request type: ${type}`);
+  
+  if (type !== 'series' || !id.startsWith('tt')) {
+    logger.warn(`Unsupported meta request: type=${type}, id=${id}`);
     return { meta: null };
   }
 
-  const { movieId } = parseStremioId(id); // movieId is the normalized title string without 'tt'
-
-  if (!movieId) {
-    logger.warn(`Invalid Stremio ID format for meta request: ${id}`);
-    return { meta: null };
+  // Try to retrieve from cache first
+  if (metaCache.has(id)) {
+    logger.info(`Returning meta from cache for ID: ${id}`);
+    return { meta: metaCache.get(id) };
   }
 
-  // Directly fetch movie data using the Stremio ID as the Redis key
-  const movieData = await hgetall(`movie:${id}`); // Key is movie:<stremioMovieId>
+  try {
+    const movieData = await redisClient.hgetall(`movie:${id}`);
+    if (!movieData) {
+      logger.info(`Movie with Stremio ID ${id} not found in Redis.`);
+      return { meta: null };
+    }
 
-  if (Object.keys(movieData).length === 0) {
-    logger.info(`Movie with Stremio ID ${id} not found in Redis.`);
+    const meta = {
+      id: movieData.stremioId,
+      type: 'series',
+      name: movieData.originalTitle,
+      poster: movieData.posterUrl,
+      posterShape: 'regular',
+      background: movieData.posterUrl,
+      description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
+      releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
+      imdbRating: 'N/A',
+      genres: movieData.languages ? movieData.languages.split(',') : [],
+      videos: [], // This will be populated with episodes/streams
+    };
+
+    // Fetch all episode streams for this movie/series
+    const episodeKeys = await redisClient.keys(`episode:${id}:s*`);
+    const videos = await Promise.all(episodeKeys.map(async (key) => {
+      const episodeData = await redisClient.hgetall(key);
+      if (!episodeData) {
+        logger.warn(`Missing episode data for key: ${key}`);
+        return null;
+      }
+      
+      // Parse season and episode from key
+      const parts = key.split(':');
+      const seasonMatch = parts[2]?.match(/s(\d+)/); // e.g., s1
+      const episodeMatch = parts[3]?.match(/e(\d+)/); // e.g., e1
+
+      const season = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
+      const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : 1;
+
+      return {
+        id: key, // Unique ID for the video (stream)
+        title: episodeData.title,
+        released: episodeData.timestamp ? new Date(episodeData.timestamp) : new Date(),
+        season: season,
+        episode: episode,
+        // Stremio stream properties are handled in streamHandler
+      };
+    }));
+
+    meta.videos = videos.filter(Boolean).sort((a, b) => {
+      // Sort videos by season then by episode
+      if (a.season !== b.season) {
+        return a.season - b.season;
+      }
+      return a.episode - b.episode;
+    });
+
+    // Cache the detailed meta item
+    metaCache.set(id, meta);
+
+    logger.info(`Returning meta for ID: ${id}`);
+    return { meta: meta };
+  } catch (error) {
+    logger.error(`Error in metaHandler for ID ${id}:`, error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Error in metaHandler for ID: ${id}`,
+      error: (error as Error).message,
+      url: id // Using ID as URL context for error logging
+    });
     return { meta: null };
   }
-
-  // Construct the meta object for the 'movie'.
-  const meta = {
-    id: id,
-    name: movieData.originalTitle || 'Unknown Title',
-    type: 'movie' as const, // Explicitly cast to 'movie' literal type
-    poster: movieData.posterUrl || `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(movieData.originalTitle || 'No Poster')}`,
-    description: movieData.description || 'No description available.',
-    background: movieData.posterUrl,
-    // Do NOT include 'videos' array here as per Stremio's 'movie' type convention
-    // and the request to list all episodes/qualities under the 'stream' endpoint.
-  };
-
-  logger.info(`Returning meta for ${meta.id}.`);
-  return { meta };
 }
 
 /**
- * Handles Stremio stream requests for a specific movie.
- * This will aggregate all episode/quality streams for the given movie ID.
- * @param type The type of content (must be 'movie').
- * @param id The Stremio ID of the movie (e.g., 'ttnormalizedtitle').
- * @returns A Promise resolving to a StreamResponse containing all available streams.
+ * Handles stream requests from Stremio.
+ * This fetches stream information (magnets/infoHashes) for a specific video.
+ * @param type The type of content.
+ * @param id The ID of the content.
+ * @returns A Promise resolving to an array of stream objects.
  */
-export async function getStream(type: string, id: string): Promise<StreamResponse> {
+export async function streamHandler(type: string, id: string): Promise<any> {
   logger.info(`Received stream request: type=${type}, id=${id}`);
 
-  if (type !== 'movie') { // Changed type check
-    logger.warn(`Invalid stream request type: ${type}`);
-    return { streams: [] };
-  }
+  // Stremio ID format for streams is usually <stremioMovieId>:s<season>e<episode>:<resolution>:<infoHash>
+  // We need to fetch all streams associated with the given Stremio Movie ID (ttXXXX)
+  const stremioMovieId = id.split(':')[0]; // Extract the base movie ID from the Stremio stream ID
 
-  const { movieId } = parseStremioId(id); // movieId is the normalized title string without 'tt'
+  try {
+    const streamKeys = await redisClient.keys(`episode:${stremioMovieId}:*`);
+    const streams = await Promise.all(streamKeys.map(async (key) => {
+      const streamData = await redisClient.hgetall(key);
+      if (!streamData) {
+        logger.warn(`Missing stream data for key: ${key}`);
+        return null;
+      }
 
-  if (!movieId) {
-    logger.warn(`Invalid Stremio ID format for stream: ${id}`);
-    return { streams: [] };
-  }
-
-  const allStreams: Stream[] = [];
-
-  // Find all episode keys associated with this stremioMovieId
-  // The pattern should match: episode:<stremioMovieId>:s<S>e<E>:<resolutionTag>:<hash>
-  const episodeKeys = await redisClient.keys(`episode:${id}:*`); // Use the full 'id' (stremioMovieId) for consistency
-
-  logger.debug(`Found ${episodeKeys.length} episode keys for movie ID ${id}.`);
-
-  // Get the original show title from the main movie data for better stream titles
-  let originalShowTitle = 'Unknown Title';
-  const movieData = await hgetall(`movie:${id}`); // Fetch directly using the Stremio ID
-  if (movieData && movieData.originalTitle) {
-      originalShowTitle = movieData.originalTitle;
-  }
-
-
-  for (const episodeKey of episodeKeys) {
-    const episodeData = await hgetall(episodeKey);
-    if (Object.keys(episodeData).length > 0 && episodeData.magnet) {
-      // Extract season, episode, and resolution from the episodeKey for stream title
-      // Example key: episode:ttmovietitle:s1e1:720p:HASH
-      const keyParts = episodeKey.split(':');
-      // keyParts will be: [0: "episode", 1: "ttmovietitle", 2: "s1e1", 3: "720p", 4: "HASH"]
-      const seasonEpisodePart = keyParts[2]; // e.g., s1e1
-      const resolutionPart = keyParts[3]; // e.g., 720p
-
-      const seasonMatch = seasonEpisodePart.match(/s(\d+)/i);
-      const episodeMatch = seasonEpisodePart.match(/e(\d+)/i);
-
-      const seasonNum = seasonMatch ? parseInt(seasonMatch[1], 10) : undefined;
-      const episodeNum = episodeMatch ? parseInt(episodeMatch[1], 10) : undefined;
-
-      const streamTitle = `${originalShowTitle}` +
-                          (seasonNum ? ` S${seasonNum}` : '') +
-                          (episodeNum ? ` E${episodeNum}` : '') +
-                          ` ${resolutionPart ? `[${resolutionPart}]` : ''}` +
-                          ` ${episodeData.size ? `(${episodeData.size})` : ''}` +
-                          ` ${episodeData.name ? ` - ${episodeData.name}` : ''}`.trim();
-
-      allStreams.push({
-        name: config.ADDON_NAME, // Or a more specific source name
-        title: streamTitle,
-        url: episodeData.magnet,
-        // Add P2P hint for magnet links as per Stremio guide
-        behaviorHints: {
-          p2p: true, // Crucial for torrents
-          filename: `${originalShowTitle}` +
-                    (seasonNum ? ` S${seasonNum}` : '') +
-                    (episodeNum ? ` E${episodeNum}` : '') +
-                    `.torrent` // Example filename for torrent client
+      // Parse sources from JSON string stored in Redis
+      let sourcesArray: string[] = [];
+      try {
+        if (streamData.sources) {
+          sourcesArray = JSON.parse(streamData.sources);
         }
-      });
-    }
+      } catch (e) {
+        logger.error(`Failed to parse sources for key ${key}:`, e);
+      }
+
+      // Construct Stremio stream object
+      const stream = {
+        name: streamData.name, // "TamilShow - <Resolution>"
+        title: streamData.title, // "Title | resolution | size"
+        infoHash: streamData.infoHash, // Use infoHash from Redis
+        sources: sourcesArray, // Use parsed sources array
+        // Stremio will infer fileIdx if not provided, picking the largest file in the torrent.
+        // If your torrents consistently have one video file, fileIdx is not strictly needed.
+      };
+      
+      // Ensure that 'infoHash' is present, otherwise the stream is invalid for Stremio
+      if (!stream.infoHash) {
+          logger.warn(`Stream for key ${key} has no infoHash. Skipping.`);
+          return null;
+      }
+
+      return stream;
+    }));
+
+    const filteredStreams = streams.filter(Boolean).sort((a, b) => {
+      // Custom sorting for streams: high quality (resolution) to low quality.
+      // Assuming resolutions like 1080p, 720p, 480p where higher numbers mean higher quality.
+      const resolutionOrder = { '4K': 4000, '1080p': 1080, '720p': 720, '480p': 480, 'unknown': 0 };
+      const resA = resolutionOrder[a.resolution as keyof typeof resolutionOrder] || 0;
+      const resB = resolutionOrder[b.resolution as keyof typeof resolutionOrder] || 0;
+      return resB - resA; // Descending order (higher resolution first)
+    });
+
+    logger.info(`Returning ${filteredStreams.length} streams for movie ID ${stremioMovieId}.`);
+    return { streams: filteredStreams };
+  } catch (error) {
+    logger.error(`Error in streamHandler for ID ${id}:`, error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Error in streamHandler for ID: ${id}`,
+      error: (error as Error).message,
+      url: id // Using ID as URL context for error logging
+    });
+    return { streams: [] };
   }
-
-  logger.info(`Returning ${allStreams.length} streams for movie ID ${id}.`);
-  return { streams: allStreams };
-}
-
-/**
- * Handles Stremio search requests.
- * @param query The search query string.
- * @returns A Promise resolving to a CatalogResponse (list of metas).
- */
-export async function search(query: string): Promise<CatalogResponse> {
-  logger.info(`Received search request for query: ${query}`);
-  // Reuse the getCatalog logic with the search query, for 'movie' type
-  return getCatalog('movie', 'tamil-web-movies', undefined, 0, query);
 }
