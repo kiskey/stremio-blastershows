@@ -19,6 +19,8 @@ const builder = new addonBuilder(manifest);
 // Define handlers for the addon
 builder.defineCatalogHandler(async (args) => {
     logger.debug('Handling catalog request...');
+    // The catalogHandler is designed to handle both general catalog requests and search requests
+    // by checking args.extra.search
     return catalogHandler(args.type, args.id, args.extra);
 });
 
@@ -32,16 +34,11 @@ builder.defineStreamHandler(async (args) => {
     return streamHandler(args.type, args.id);
 });
 
-// Define search handler if it's included in the manifest
-if (manifest.resources.includes('search')) {
-    builder.defineSearchHandler(async (args) => {
-        logger.debug('Handling search request...');
-        return searchHandler(args.type, args.id, args.extra);
-    });
-}
+// REMOVED: builder.defineSearchHandler as it's not a direct method
+// Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra
 
 // Get the Stremio Addon SDK's Express app (this is how serveHTTP works internally)
-const addonApp = builder.get(); // Corrected: Removed extra quote and added closing parenthesis
+const addonApp = builder.get();
 
 // Create a new Express app to host both the addon and custom debug endpoints
 const app = express();
