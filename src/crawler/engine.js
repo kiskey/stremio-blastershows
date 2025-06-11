@@ -2,7 +2,6 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { config } = require('../config');
 const redisClient = require('../redis'); // Import redisClient instance directly
-// Removed destructured imports for specific Redis functions as they will be called directly on redisClient
 const { processThread, getUniqueThreadId } = require('./processor');
 const { logger } = require('../utils/logger');
 const { normalizeTitle, parseTitle } = require('../parser/title');
@@ -254,8 +253,16 @@ async function saveThreadData(data) {
   
   const now = new Date();
 
-  const normalizedTitle = normalizeTitle(title);
-  const stremioMovieId = `tt${normalizedTitle}`;
+  // Parse title to get season, year, and languages for standardized ID
+  const { season, languages } = parseTitle(title);
+  const year = new Date(finalThreadStartedTime).getFullYear();
+  const seasonNum = season || 1; // Default to Season 1 if not parsed
+
+  // Standardized Stremio Movie ID: tt<normalizedTitle>-<year>-s<seasonNum>
+  // This ensures unique catalog entries for each series/season combination
+  const standardizedTitle = normalizeTitle(title);
+  const stremioMovieId = `tt${standardizedTitle}-${year}-s${seasonNum}`;
+
 
   const movieKey = `movie:${stremioMovieId}`;
   try {
@@ -263,7 +270,7 @@ async function saveThreadData(data) {
     await redisClient.hmset(movieKey, {
       originalTitle: title,
       posterUrl: posterUrl,
-      stremioId: stremioMovieId,
+      stremioId: stremioMovieId, // Store the standardized Stremio ID
       lastUpdated: now.toISOString(),
       associatedThreadId: threadId,
       threadStartedTime: finalThreadStartedTime
@@ -281,9 +288,8 @@ async function saveThreadData(data) {
   }
 
 
-  const { season, episodeStart, episodeEnd, languages } = parseTitle(title);
-
-  let seasonNum = season || 1;
+  // Use parseTitle again for episode details specifically, as it returns episodeStart/End
+  const { episodeStart, episodeEnd } = parseTitle(title);
   let episodeCount = (episodeStart !== undefined && episodeEnd !== undefined) ? (episodeEnd - episodeStart + 1) : 1;
 
   for (let i = 0; i < magnets.length; i++) {
@@ -303,6 +309,7 @@ async function saveThreadData(data) {
     const streamTitle = `${title} | ${magnet.resolution || 'Unknown'} | ${magnet.size || 'Unknown Size'}`;
 
     const currentEpisodeNum = (episodeStart || 1) + (i % episodeCount);
+    // Episode keys include the full standardized stremioMovieId, season, episode, resolution, and infoHash
     const episodeKey = `episode:${stremioMovieId}:s${seasonNum}e${currentEpisodeNum}:${magnet.resolution || 'unknown'}:${infoHash}`;
 
     try {
@@ -316,7 +323,7 @@ async function saveThreadData(data) {
           resolution: magnet.resolution || '',
           timestamp: now.toISOString(),
           threadUrl: originalUrl,
-          stremioMovieId: stremioMovieId
+          stremioMovieId: stremioMovieId // Link back to the standardized movie ID
         });
         logger.info(`Saved stream data for ${episodeKey} (InfoHash: ${infoHash.substring(0, 10)}..., Name: "${streamName}", Title: "${streamTitle}")`);
     } catch (error) {
@@ -354,6 +361,7 @@ async function saveThreadData(data) {
     // Direct call to redisClient.hgetall and redisClient.hset
     const existingSeasonsString = await redisClient.hgetall(movieKey).then(data => data.seasons);
     const existingSeasons = existingSeasonsString ? existingSeasonsString.split(',').filter(Boolean).map(Number) : [];
+    // Ensure seasonNum is added to existing seasons and sort
     const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
     await redisClient.hset(movieKey, 'seasons', mergedSeasons.join(','));
   } catch (error) {
@@ -490,7 +498,9 @@ function startCrawler() {
   // Initial calls wrapped in an async IIFE to ensure they are awaited
   (async () => {
     try {
-        await redisClient.purgeRedis(); // Assuming purgeRedis is still exported directly from redis.js
+        if (config.PURGE_ON_START) { // Only purge if PURGE_ON_START is true
+            await redisClient.purgeRedis(); // Assuming purgeRedis is still exported directly from redis.js
+        }
         await fetchAndCacheBestTrackers();
         await crawlNewPages();
         await revisitExistingThreads();
@@ -526,14 +536,6 @@ function startCrawler() {
     logger.info('Scheduled revisit for existing threads triggered.');
     try {
         await revisitExistingThreads();
-    } catch (error) {
-        logger.error('Error during scheduled revisit of existing threads:', error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: 'Error during scheduled revisit of existing threads',
-            error: error.message
-        });
     }
   }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
 
