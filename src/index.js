@@ -39,7 +39,20 @@ builder.defineStreamHandler(async (args) => {
 // Search requests are handled by defineCatalogHandler if 'search' is in manifest.catalogs[].extra.
 // No need for a separate defineSearchHandler.
 
-// Add custom debug endpoint for crawl data directly to our Express app
+// --- Custom Endpoints ---
+
+// Explicitly serve the manifest.json
+app.get('/manifest.json', (req, res) => {
+    logger.info('Serving manifest.json');
+    res.json(manifest);
+});
+
+// Add a basic root route to confirm the server is running
+app.get('/', (req, res) => {
+    res.send(`<h1>${manifest.name} Stremio Addon is running!</h1><p>Visit /manifest.json for the addon manifest.</p><p>Visit /debug/crawl-data for crawl debugging.</p>`);
+});
+
+// Add custom debug endpoint for crawl data
 app.get('/debug/crawl-data', async (req, res) => {
     logger.info('Received debug/crawl-data request.');
     try {
