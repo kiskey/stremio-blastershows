@@ -41,7 +41,7 @@ if (manifest.resources.includes('search')) {
 }
 
 // Get the Stremio Addon SDK's Express app (this is how serveHTTP works internally)
-const addonApp = builder.get ");
+const addonApp = builder.get(); // Corrected: Removed extra quote and added closing parenthesis
 
 // Create a new Express app to host both the addon and custom debug endpoints
 const app = express();
