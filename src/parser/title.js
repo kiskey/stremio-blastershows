@@ -231,10 +231,10 @@ function parseTitle(titleString) {
 
 /**
  * Performs fuzzy matching between two titles using Jaro-Winkler similarity.
- * @param {string} title1 The first title string.
- * @param {string} title2 The second title string.
- * @param {number} [threshold=0.85] The similarity threshold (0.0 to 1.0).
- * @returns {boolean} True if the similarity is above the threshold, false otherwise.
+ * @param title1 The first title string.
+ * @param title2 The second title string.
+ * @param threshold The similarity threshold (0.0 to 1.0).
+ * @returns True if the similarity is above the threshold, false otherwise.
  */
 function fuzzyMatch(title1, title2, threshold = 0.85) {
   const normalized1 = normalizeTitle(title1);
@@ -253,8 +253,8 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
 
 /**
  * Cleans a title to be used as the primary catalog entry for a series-season "movie".
- * This removes episode numbers, quality/codec tags, sizes, subtitles, etc.,
- * leaving just "Series Title (Year) SXX".
+ * This removes episode numbers, quality/codec tags, sizes, subtitles, website domains,
+ * and stray punctuation, leaving just "Series Title (Year) SXX".
  *
  * @param {string} rawTitle The raw title string (e.g., from magnet name or parsed thread title).
  * @returns {string} The cleaned series-season title for the catalog.
@@ -264,16 +264,17 @@ function cleanBaseTitleForCatalog(rawTitle) {
 
   let cleaned = rawTitle;
 
-  // 1. Remove streamname prefix "TamilShow - resolution - "
-  cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
-
-  // 2. Remove website domains (e.g., www.1TamilBlasters.earth, www.example.com, .net, .org, .fi, etc.)
+  // 1. Remove website domains (e.g., www.1TamilBlasters.earth)
   cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi, '');
+
+  // 2. Remove streamname prefix "TamilShow - resolution - "
+  cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, '');
 
   // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
   cleaned = cleaned.replace(/\[.*?\]/g, '');
 
   // 4. Remove episode indicators (EPXX, E XX, Episode XX) and resolution postfixes (- HD, - HQ, - LQ)
+  // This is the key difference from cleanStreamDetailsTitle
   cleaned = cleaned.replace(/(?:EP(?:\d+(?:-\d+)?)|E\d+|Episode(?:s)?\s*\d+(?:-\d+)?|-\s*(?:HD|HQ|LQ))/gi, '');
 
   // 5. Remove sizes (e.g., " - 600MB", " - 1.7GB")
@@ -291,14 +292,14 @@ function cleanBaseTitleForCatalog(rawTitle) {
       'WEB-DL', 'BluRay', 'HDTV', 'WEBRip', 'BDRip', 'DVDRip', 'UNTOUCHED',
       'HDR', 'DDP', 'WEB', 'RIP', 'BR'
   ];
-  // Using a negative lookbehind to avoid matching patterns that are part of actual words unless explicitly a separator
+  // Regex to remove these patterns if they appear as standalone words or hyphenated
   const regex = new RegExp(`(?:\\s*[-+ ]*\\b(?:${codecQualityPatterns.join('|')})\\b)*`, 'gi');
   cleaned = cleaned.replace(regex, '');
 
   // 9. Remove stray punctuation or multiple spaces, and trim
   // Keep year parentheses
   cleaned = cleaned.replace(/[-\+]/g, ' '); // Replace hyphens/pluses with single space
-  cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses
+  cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses. KEEP PARENTHESES FOR YEAR/SEASON.
   cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
   cleaned = cleaned.replace(/^-+|-+$/g, '').trim(); // Remove any lingering leading/trailing hyphens/spaces
 
@@ -347,6 +348,7 @@ function cleanStreamDetailsTitle(fileName, resolution) {
     cleaned = cleaned.replace(regex, '');
 
     // 8. Remove stray punctuation or multiple spaces, and trim
+    // Keep year parentheses and episode indicators
     cleaned = cleaned.replace(/[-\+]/g, ' '); // Replace hyphens/pluses with single space
     cleaned = cleaned.replace(/[^a-zA-Z0-9\s()]/g, ' '); // Remove other non-alphanumeric, non-space, non-parentheses
     cleaned = cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces to single
@@ -371,6 +373,6 @@ module.exports = {
   normalizeTitle,
   parseTitle,
   fuzzyMatch,
-  cleanBaseTitleForCatalog, // New function for catalog name
-  cleanStreamDetailsTitle // Adjusted function for stream title
+  cleanBaseTitleForCatalog, // Function for primary catalog title (series-season group)
+  cleanStreamDetailsTitle // Function for individual stream's display title (episode + quality)
 };
