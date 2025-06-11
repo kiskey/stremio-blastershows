@@ -72,6 +72,26 @@ async function catalogHandler(type, id, extra) {
           return null;
         }
 
+        let parsedVideos = [];
+        if (movieData.seasons) {
+            try {
+                const seasonsArray = JSON.parse(movieData.seasons);
+                if (Array.isArray(seasonsArray)) {
+                    parsedVideos = seasonsArray.map(s => ({ season: s }));
+                } else {
+                    logger.warn(`movieData.seasons for ${key} was not an array after JSON.parse. Raw: ${movieData.seasons}`);
+                }
+            } catch (parseError) {
+                logger.error(`Failed to parse seasons JSON for key ${key}:`, parseError);
+                logger.logToRedisErrorQueue({
+                    timestamp: new Date().toISOString(),
+                    level: 'ERROR',
+                    message: `Failed to parse seasons JSON for key: ${key}`,
+                    error: parseError.message
+                });
+            }
+        }
+
         const meta = {
           id: movieData.stremioId,
           type: 'series',
@@ -83,7 +103,7 @@ async function catalogHandler(type, id, extra) {
           releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
           imdbRating: 'N/A',
           genres: movieData.languages ? movieData.languages.split(',') : [],
-          videos: movieData.seasons ? JSON.parse(movieData.seasons).map(s => ({ season: s })) : [],
+          videos: parsedVideos, // Use the safely parsed videos array
         };
         
         metaCache.set(meta.id, meta);
@@ -177,8 +197,17 @@ async function metaHandler(type, id) {
         // Parse season and episode from the episodeKey which includes standardized parts
         // e.g., episode:ttnormalizedtitle-year-sseasonnum:s<season>e<episode>:<resolution>:<infoHash>
         const parts = key.split(':');
-        const seasonMatch = parts[3]?.match(/s(\d+)/); // Parts[3] now contains s<season>e<episode>
-        const episodeMatch = parts[3]?.match(/e(\d+)/);
+        // Corrected index for season/episode parsing assuming stremioMovieId is part[1] (movie:)
+        // and actual SxxExx is part[2]
+        // Example key: episode:ttshowtitle-2025-s1:s1e1:1080p:INFO_HASH
+        // parts[0] = "episode"
+        // parts[1] = "ttshowtitle-2025-s1" (stremioMovieId)
+        // parts[2] = "s1e1" (season/episode)
+        // parts[3] = "1080p" (resolution)
+        // parts[4] = "INFO_HASH"
+        const seasonEpisodePart = parts[2]; // This should be like 's1e1'
+        const seasonMatch = seasonEpisodePart?.match(/s(\d+)/); 
+        const episodeMatch = seasonEpisodePart?.match(/e(\d+)/);
 
         const season = seasonMatch ? parseInt(seasonMatch[1], 10) : 1;
         const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : 1;
