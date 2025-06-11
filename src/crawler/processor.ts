@@ -10,9 +10,6 @@ import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .
 import { parseTitle, normalizeTitle, fuzzyMatch } from '../parser/title'; // Import title parsing functions
 import { logger } from '../utils/logger'; // Import the centralized logger
 
-// Removed duplicate MagnetData interface definition.
-// It is now imported from engine.ts as the single source of truth.
-
 /**
  * Fetches the content of a given URL with error handling and retries.
  * @param url The URL to fetch.
@@ -59,6 +56,37 @@ function validateMagnetUri(uri: string): boolean {
   // BTIH regex for magnet URI validation
   const btihRegex = /^magnet:\?xt=urn:btih:[a-zA-Z0-9]{40,}.*$/i;
   return btihRegex.test(uri);
+}
+
+/**
+ * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
+ * @param magnetUri The magnet URI string.
+ * @returns The 40-character BTIH as a string, or null if not found/invalid.
+ */
+function extractBtihFromMagnet(magnetUri: string): string | null {
+  const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return null;
+}
+
+/**
+ * Parses the 'dn' (display name) parameter from a magnet URI.
+ * @param magnetUri The magnet URI string.
+ * @returns The decoded display name string, or null if not found.
+ */
+function parseDnFromMagnetUri(magnetUri: string): string | null {
+  try {
+    const url = new URL(magnetUri);
+    const dn = url.searchParams.get('dn');
+    if (dn) {
+      return decodeURIComponent(dn.replace(/\+/g, ' ')); // Decode URI component and replace '+' with spaces
+    }
+  } catch (error) {
+    logger.debug(`Error parsing 'dn' from magnet URI: ${magnetUri}`, error);
+  }
+  return null;
 }
 
 /**
@@ -180,52 +208,81 @@ export async function processThread(threadUrl: string): Promise<ThreadContent | 
   // Generate a unique thread ID using the robust function
   const threadId = getUniqueThreadId(threadUrl);
 
-  // --- NEW MAGNET EXTRACTION LOGIC ---
+  // --- REVISED MAGNET EXTRACTION LOGIC ---
   const magnets: MagnetData[] = [];
-  // Find all elements that are immediately followed by a magnet-plugin link,
-  // and contain the ipsAttachLink_title for the descriptive name.
-  // This assumes the structure: ipsAttachLink_block (with title) -> magnet-plugin link
   
-  // Find all 'a.ipsAttachLink_block' elements which contain the descriptive titles
-  $('a.ipsAttachLink_block').each((index, titleLinkElement) => {
-      const descriptiveTitle = $(titleLinkElement).find('span.ipsAttachLink_title').text().trim();
-      
-      // Find the next sibling that is a 'magnet-plugin' link
-      const magnetLinkElement = $(titleLinkElement).nextAll('a.magnet-plugin').first();
+  // Create a map to store descriptive titles found from ipsAttachLink_block elements
+  // Key: The text content of the ipsAttachLink_title, Value: The descriptive text itself.
+  // This allows us to look up the descriptive title when we encounter a magnet link.
+  const descriptiveTitlesMap = new Map<string, string>();
+  $('a.ipsAttachLink_block').each((_index, titleLinkElement) => {
+      const titleText = $(titleLinkElement).find('span.ipsAttachLink_title').text().trim();
+      if (titleText) {
+          // Use the clean title text as a key for fuzzy matching later if needed,
+          // but for direct pairing, a direct match is ideal.
+          descriptiveTitlesMap.set(titleText, titleText);
+      }
+  });
 
-      const magnetUrl = magnetLinkElement.attr('href');
+  // Now iterate over all magnet-plugin links
+  $('a.magnet-plugin').each((_index, magnetLinkElement) => {
+      const magnetUrl = $(magnetLinkElement).attr('href');
+      if (magnetUrl && validateMagnetUri(magnetUrl)) {
+          // Attempt to find the descriptive title from a *preceding* ipsAttachLink_title.
+          // We'll traverse backwards up the DOM tree from the magnet link's parent
+          // to find a preceding ipsAttachLink_block.
+          let descriptiveName: string | null = null;
+          
+          // Try to find the closest preceding ipsAttachLink_block sibling
+          const prevAttachLink = $(magnetLinkElement).prevAll('a.ipsAttachLink_block').first();
+          if (prevAttachLink.length > 0) {
+            descriptiveName = prevAttachLink.find('span.ipsAttachLink_title').text().trim();
+          }
 
-      if (magnetUrl && validateMagnetUri(magnetUrl) && descriptiveTitle) {
-          const { resolution, size } = parseResolutionAndSizeFromMagnetName(descriptiveTitle);
-          magnets.push({
-              url: magnetUrl,
-              name: descriptiveTitle, // Use the descriptive title from ipsAttachLink_title
-              size: size,
-              resolution: resolution
-          });
+          // Fallback to parsing 'dn' parameter from magnet URI if no descriptive title found
+          if (!descriptiveName) {
+            descriptiveName = parseDnFromMagnetUri(magnetUrl);
+          }
+
+          // Final fallback if 'dn' is also not found or empty
+          if (!descriptiveName) {
+            descriptiveName = $(magnetLinkElement).text().trim(); // Might be "Magnet Link"
+            if (descriptiveName === 'Magnet Link' || !descriptiveName) {
+                descriptiveName = 'Unknown Quality Magnet'; // Generic fallback
+            }
+          }
+          
+          const { resolution, size } = parseResolutionAndSizeFromMagnetName(descriptiveName);
+          
+          // Ensure a unique BTIH for the stream key
+          const btih = extractBtihFromMagnet(magnetUrl);
+
+          if (btih) {
+            magnets.push({
+                url: magnetUrl,
+                name: descriptiveName, // Use the extracted descriptive name
+                size: size,
+                resolution: resolution
+            });
+          } else {
+            logger.warn(`Could not extract BTIH for magnet: ${magnetUrl} in thread ${threadUrl}`);
+             logger.logToRedisErrorQueue({
+                timestamp: new Date().toISOString(),
+                level: 'WARN',
+                message: `Magnet URI without BTIH: ${magnetUrl}`,
+                url: threadUrl
+              });
+          }
       } else if (magnetUrl) {
-          logger.warn(`Invalid magnet URI or missing descriptive title for ${magnetUrl} in thread ${threadUrl}`);
+          logger.warn(`Invalid magnet URI detected: ${magnetUrl} in thread ${threadUrl}`);
           logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(), // Use current timestamp for error logging
+            timestamp: new Date().toISOString(),
             level: 'WARN',
-            message: `Invalid magnet URI or missing title detected: ${magnetUrl}`,
+            message: `Invalid magnet URI detected: ${magnetUrl}`,
             url: threadUrl
           });
       }
   });
-
-  // Fallback: If no magnets found by pairing, try to find standalone magnet links
-  // (though the primary goal is paired extraction)
-  if (magnets.length === 0) {
-      $('a.magnet-plugin').each((index, element) => {
-          const href = $(element).attr('href');
-          if (href && validateMagnetUri(href)) {
-              const name = $(element).text().trim() || $(element).attr('title')?.trim() || 'Unknown Magnet';
-              const { resolution, size } = parseResolutionAndSizeFromMagnetName(name);
-              magnets.push({ url: href, name: name, size: size, resolution: resolution });
-          }
-      });
-  }
 
 
   const processedContent: ThreadContent = {
