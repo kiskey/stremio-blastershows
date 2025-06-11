@@ -94,7 +94,7 @@ async function catalogHandler(type, id, extra) {
         const meta = {
           id: movieData.stremioId, // This is now the unique ID for each episode/stream
           type: 'movie', // Content type is "movie"
-          name: movieData.originalTitle, // This is the full episode display title
+          name: movieData.originalTitle, // This is the full episode display title (cleaned)
           poster: movieData.posterUrl,
           posterShape: 'regular',
           background: movieData.posterUrl,
@@ -193,7 +193,7 @@ async function metaHandler(type, id) {
     const meta = {
       id: movieData.stremioId,
       type: 'movie', // Content type is "movie"
-      name: movieData.originalTitle, // Full episode display title
+      name: movieData.originalTitle, // Full episode display title (cleaned)
       poster: movieData.posterUrl,
       posterShape: 'regular',
       background: movieData.posterUrl,
@@ -277,8 +277,8 @@ async function streamHandler(type, id) {
 
       // Construct Stremio stream object from the movieData
       const stream = { 
-        name: streamData.streamName, // Use streamName field from stored data
-        title: streamData.streamTitle, // Use streamTitle field from stored data
+        name: streamData.streamName, // Use streamName field from stored data (e.g., "TamilShows - 1080p")
+        title: streamData.streamTitle, // Use streamTitle field from stored data (e.g., "Cooku With Comali (2025) S06E05")
         infoHash: streamData.infoHash,
         sources: sourcesArray,
       };
