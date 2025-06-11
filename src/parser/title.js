@@ -251,8 +251,50 @@ function fuzzyMatch(title1, title2, threshold = 0.85) {
   return similarity >= threshold;
 }
 
+/**
+ * Cleans a stream file name/display name to produce a concise title for catalog display.
+ * This function will remove website domains, bracketed content, file extensions,
+ * and common codec/quality strings, along with "TamilShow - resolution -" prefixes.
+ *
+ * Example: "TamilShow - 1080p - www.1TamilBlasters.earth - Cooku With Comali (2025) S06E05 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv - AVC - x264 - AAC"
+ * Should become: "Cooku With Comali (2025) S06E05"
+ *
+ * @param {string} fileName The stream file name or display name.
+ * @returns {string} The cleaned title for catalog display.
+ */
+function cleanStreamFileNameForCatalogTitle(fileName) {
+    if (!fileName) return '';
+
+    let cleaned = fileName;
+
+    // 1. Remove website domains (e.g., www.1TamilBlasters.earth)
+    cleaned = cleaned.replace(/\b(www\.[a-zA-Z0-9-]+\.(com|net|org|io|fi|earth|in|biz|info|tv|xyz|men|online))\b/gi, ' ');
+
+    // 2. Remove streamname prefix "TamilShow - resolution - " (e.g., "TamilShow - 1080p - ")
+    // This targets both "TamilShow - XXXp -" and "TamilShow - Unknown Res -"
+    cleaned = cleaned.replace(/TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, ' ');
+
+    // 3. Remove content within square brackets (e.g., [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC -1.7GB].mkv)
+    cleaned = cleaned.replace(/\[.*?\]/g, ' ');
+
+    // 4. Remove any file extensions (e.g., .mkv, .mp4, .avi)
+    cleaned = cleaned.replace(/\.\w{2,4}$/, ' ');
+
+    // 5. Remove common codec/quality strings outside of brackets, like "- AVC - x264 - AAC"
+    // Be careful not to remove parts of the actual title.
+    // This regex looks for these patterns preceded by a hyphen or space.
+    cleaned = cleaned.replace(/(?:\s-\s*(?:x264|x265|HEVC|AAC|DD5\.1|AC3|DTS|HDRip|WEB-DL|BluRay|HDTV|WEBRip|BDRip|DVDRip|AVC|UNTOUCHED))+/gi, ' ');
+
+    // 6. Final cleanup: replace multiple spaces with single space and trim
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    return cleaned;
+}
+
+
 module.exports = {
   normalizeTitle,
   parseTitle,
-  fuzzyMatch
+  fuzzyMatch,
+  cleanStreamFileNameForCatalogTitle // Export the new function
 };
