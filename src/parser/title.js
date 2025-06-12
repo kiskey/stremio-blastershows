@@ -471,33 +471,54 @@ function cleanBaseTitleForCatalog(rawBaseShowName, year, season) {
  * This function retains episode information and adds a resolution postfix.
  * It primarily uses the 'fullDisplayTitleForStream' from parseTitle, which already has episode info.
  *
- * @param {string} fileName The stream file name or display name (ideally the `parsedTitleMetadata.title`).
- * @param {string} [resolution] The resolution (e.g., "1080p", "720p") for postfixing.
+ * @param {ParsedTitleMetadata} metadata The parsed title metadata for the specific stream (from magnet.name).
  * @returns {string} The cleaned episode stream title.
  */
-function cleanStreamDetailsTitle(fileName, resolution) {
-    if (!fileName) return '';
+function cleanStreamDetailsTitle(metadata) {
+    if (!metadata || !metadata.baseShowName) {
+        logger.warn('cleanStreamDetailsTitle received invalid metadata. Returning empty string.');
+        return '';
+    }
 
-    let cleaned = fileName;
+    let parts = [metadata.baseShowName];
 
-    // Remove any remaining website domains or file extensions that might have slipped through
-    cleaned = cleaned.replace(REGEX_WEBSITE_DOMAIN, ' ').replace(REGEX_FILE_EXTENSION, ' ').replace(/\s+/g, ' ').trim();
-
-    // Append resolution postfix
-    if (resolution) {
-        const resolutionNum = parseInt(resolution, 10);
-        if (resolution === '1080p' || resolution.toLowerCase() === '4k') {
-            cleaned += ' - HD';
-        } else if (resolution === '720p') {
-            cleaned += ' - HQ';
-        } else if (resolutionNum <= 480) {
-            cleaned += ' - LQ';
+    // Add season and episode information
+    if (metadata.season && metadata.season !== 0) {
+        parts.push(`S${metadata.season.toString().padStart(2, '0')}`);
+    }
+    if (metadata.episodeStart && metadata.episodeStart !== 0) {
+        if (metadata.episodeEnd && metadata.episodeStart !== metadata.episodeEnd) {
+            parts.push(`EP(${metadata.episodeStart.toString().padStart(2, '0')}-${metadata.episodeEnd.toString().padStart(2, '0')})`);
         } else {
-            cleaned += ` - ${resolution}`; // Add resolution if not HD/HQ/LQ
+            parts.push(`EP${metadata.episodeStart.toString().padStart(2, '0')}`);
         }
     }
 
-    return cleaned.trim();
+    let cleanedTitle = parts.join(' ').replace(/\s+/g, ' ').trim();
+
+    // Add quality suffix based on resolution or quality tags
+    if (metadata.qualityTags.length > 0) {
+        // Prioritize specific quality tags (e.g., HDRip, WEB-DL), then general ones
+        const bestQuality = metadata.qualityTags.find(tag => ['HDRip', 'WEB-DL', 'BluRay', 'HDTV'].includes(tag))
+                           || metadata.qualityTags[0]; // Fallback to first available tag
+        if (bestQuality) {
+            cleanedTitle += ` - ${bestQuality.toUpperCase()}`; // Capitalize for consistency, e.g., HD, HQ
+        }
+    } else if (metadata.resolutions.length > 0) {
+        const resolution = metadata.resolutions[0]; // Take the first resolution found
+        const resolutionNum = parseInt(resolution, 10);
+        if (resolution === '1080p' || resolution.toLowerCase() === '4k') {
+            cleanedTitle += ' - HD';
+        } else if (resolution === '720p') {
+            cleanedTitle += ' - HQ';
+        } else if (resolutionNum <= 480) {
+            cleanedTitle += ' - LQ';
+        } else {
+            cleanedTitle += ` - ${resolution.toUpperCase()}`; // Default to resolution if no specific quality
+        }
+    }
+
+    return cleanedTitle.trim();
 }
 
 module.exports = {
