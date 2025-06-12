@@ -25,10 +25,11 @@ const REGEX_YEAR = /\(?(\d{4})\)?/ig;
 const REGEX_SEASON = /(?:S(\d+)(?:-\s*S?(\d+))?|Season\s*(\d+)(?:-\s*Season\s*(\d+))?|s(\d+)(?:-s(\d+))?|season\s*(\d+)(?:-(\d+))?|complete series|season\s*pack|full\s*season)/ig;
 const REGEX_EPISODE = /(?:E(?:P)?(\d+)(?:-(\d+))?|Episode(?:s)?\s*(\d+)(?:-(\d+))?|e(\d+)(?:-e(\d+))?|ep(\d+)(?:-ep(\d+))?)/ig;
 const REGEX_RESOLUTION = /(\d{3,4}p|4K|HD|HQ)/ig;
-// Updated REGEX_LANGUAGES to capture various forms: [lang+lang], lang-lang, lang lang, standalone lang
-const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b|Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Portugu\s*ese)\b/ig;
+// Updated REGEX_LANGUAGES to capture various forms: [lang+lang], lang-lang, lang lang, standalone lang, and new abbreviations
+const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por|jap|ml|kn)\b|Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Portugu\s*ese)\b/ig;
 const REGEX_CODECS = /(x264|x265|HEVC|AVC|VP9)/ig;
-const REGEX_AUDIO_CODECS = /(AAC|DD5\.1|AC3|DTS|Opus|MP3)/ig;
+// Updated REGEX_AUDIO_CODECS to catch "5 1" and "5.1"
+const REGEX_AUDIO_CODECS = /(AAC|DD5\.1|AC3|DTS|Opus|MP3|\b5\.1\b|\b5\s1\b)/ig;
 const REGEX_QUALITY_TAGS = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR|HQRip|HDRip)/ig;
 const REGEX_SIZE = /(\d+\.?\d*\s*[KMGT]?B)/ig;
 const REGEX_SUBTITLE = /(ESub|Subtitles?)/ig;
@@ -50,7 +51,10 @@ const LANGUAGE_MAP = {
   'korean': 'ko', 'kor': 'ko',
   'chinese': 'zh', 'chi': 'zh',
   'portuguese': 'pt', 'por': 'pt',
-  'multi': 'multi'
+  'multi': 'multi',
+  'jap': 'ja', // Added Japanese abbreviation
+  'ml': 'ml', // Added Malayalam abbreviation
+  'kn': 'kn', // Added Kannada abbreviation
 };
 
 /**
