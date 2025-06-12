@@ -1,87 +1,99 @@
-const axios = require('axios');
-const cheerio = require('cheerio');
-const { config } = require('../config');
-const redisClient = require('../redis'); // Import redisClient instance directly
-const { processThread, getUniqueThreadId } = require('./processor');
-const { logger } = require('../utils/logger');
-const { 
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+import { config } from '../config'; // Import config to access new tracker settings
+import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
+import { processThread } from './processor'; // Ensure processThread is imported
+import { logger } from '../utils/logger';
+import { 
   normalizeTitle, 
   parseTitle, 
   fuzzyMatch, 
-  cleanBaseTitleForCatalog, // New function for catalog name
-  cleanStreamDetailsTitle // Adjusted function for stream title
-} = require('../parser/title');
+  cleanBaseTitleForCatalog, 
+  cleanStreamDetailsTitle // Import the updated cleanStreamDetailsTitle
+} from '../parser/title';
 
 /**
- * @typedef {object} MagnetData
- * @property {string} url - The magnet URI.
- * @property {string} name - Full descriptive name.
- * @property {string} [size] - Size of the content.
- * @property {string} [resolution] - Resolution of the content.
+ * Interface for MagnetData as specified in requirements.
+ * Now includes resolution and size for each magnet.
  */
+export interface MagnetData {
+  url: string;
+  name: string; // Full descriptive name from ipsAttachLink_title or magnet DN
+  size?: string;
+  resolution?: string; // Add resolution here
+  parsedMetadata?: any; // NEW: Added parsedMetadata from title.js
+}
 
 /**
- * @typedef {object} ThreadContent
- * @property {string} title
- * @property {string} posterUrl
- * @property {MagnetData[]} magnets
- * @property {string} timestamp
- * @property {string} threadId
- * @property {string} originalUrl
- * @property {string} threadStartedTime
+ * Interface for ThreadContent extracted from a forum thread page.
  */
+export interface ThreadContent {
+  title: string;
+  posterUrl: string;
+  magnets: MagnetData[];
+  timestamp: string; // ISO8601 format (last modified)
+  threadId: string; // Unique ID for the thread
+  originalUrl: string; // The URL of the thread page
+  threadStartedTime: string; // ISO8601 format (initial post time)
+}
 
 // Global variable to hold the current page number for new content crawling
 let currentPage = 1;
 let isCrawling = false; // Flag to prevent multiple concurrent crawls
 
 // Global variables for best trackers caching
-let cachedBestTrackers = [];
-let lastTrackerUpdate = 0; // Timestamp of the last successful update in milliseconds
+let cachedBestTrackers: string[] = [];
+let lastTrackerUpdate: number = 0; // Timestamp of the last successful update in milliseconds
 
 /**
  * Fetches the content of a given URL.
- * @param {string} url The URL to fetch.
- * @param {number} [retries=3] Remaining retries.
- * @returns {Promise<string|null>} The HTML content as a string, or null if fetching fails.
+ * Implements exponential backoff for failed requests and User-Agent rotation (simple).
+ * @param url The URL to fetch.
+ * @param retries Remaining retries.
+ * @returns The HTML content as a string, or null if fetching fails.
  */
 async function fetchHtml(url, retries = 3) {
+  // Simple User-Agent rotation (for a more robust solution, use a list of UAs)
   const userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
-    'Mozilla/5.5 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari:605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:98.0) Gecko/20100101 Firefox/98.0',
   ];
   const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-  await new Promise(resolve => setTimeout(resolve, 250));
+  // Request throttling
+  await new Promise(resolve => setTimeout(resolve, 250)); // 250ms between calls
 
   try {
     const response = await axios.get(url, {
       headers: {
         'User-Agent': userAgent,
-        'Accept-Encoding': 'gzip, deflate, br'
+        'Accept-Encoding': 'gzip, deflate, br' // Optimize for smaller response sizes
       },
-      maxRedirects: 10,
-      validateStatus: (status) => status >= 200 && status < 400,
-      timeout: 15000 // Added a 15-second timeout for HTML fetches
+      maxRedirects: 10, // Handle 302 redirects
+      validateStatus: (status) => status >= 200 && status < 400 // Accept 2xx and 3xx
     });
 
     if (response.status >= 300 && response.status < 400) {
+        // Handle redirects if needed, e.g., update base URL
         const redirectUrl = response.headers.location;
         if (redirectUrl) {
             logger.warn(`Redirect detected from ${url} to ${redirectUrl}.`);
+            // For now, axios follows redirects automatically.
         }
     }
+
     return response.data;
   } catch (error) {
     logger.error(`Error fetching ${url}:`, error);
     if (retries > 0) {
-      const delay = Math.pow(2, (3 - retries)) * 1000;
+      const delay = Math.pow(2, (3 - retries)) * 1000; // Exponential backoff
       logger.info(`Retrying ${url} in ${delay / 1000} seconds... (${retries} left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return fetchHtml(url, retries - 1);
     }
     logger.error(`Failed to fetch ${url} after multiple retries.`);
+    // Log error to Redis error queue (as per requirement)
     logger.logToRedisErrorQueue({
       timestamp: new Date().toISOString(),
       level: 'ERROR',
@@ -95,32 +107,60 @@ async function fetchHtml(url, retries = 3) {
 
 /**
  * Discovers thread URLs from a forum page.
- * @param {string} html The HTML content of the forum page.
- * @param {string} baseUrl The base URL to resolve relative links.
- * @returns {string[]} An array of discovered unique thread URLs relevant for processing.
+ * @param html The HTML content of the forum page.
+ * @param baseUrl The base URL to resolve relative links.
+ * @returns An array of discovered unique thread URLs relevant for processing.
  */
 function discoverThreadUrls(html, baseUrl) {
   const $ = cheerio.load(html);
-  const uniqueThreadUrls = new Set();
+  const uniqueThreadUrls = new Set(); // Use a Set to ensure uniqueness
 
+  // Parse <a class="" data-ipshover> elements as specified in requirements.
   $('a[data-ipshover]').each((index, element) => {
     const href = $(element).attr('href');
     if (href) {
       const absoluteUrl = new URL(href, baseUrl).href;
+      // Filter out unwanted URLs: only keep those containing "/forums/topic/"
+      // and explicitly ignore those containing "/profile/"
       if (absoluteUrl.includes('/forums/topic/') && !absoluteUrl.includes('/profile/')) {
-        uniqueThreadUrls.add(absoluteUrl);
+        uniqueThreadUrls.add(absoluteUrl); // Add to Set
       } else {
         logger.debug(`Ignoring URL: ${absoluteUrl} (not a topic or is a profile page)`);
       }
     }
   });
-  return Array.from(uniqueThreadUrls);
+  return Array.from(uniqueThreadUrls); // Convert Set back to Array
+}
+
+/**
+ * Extracts a unique numerical thread ID from a forum topic URL.
+ * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
+ * @param threadUrl The URL of the forum thread.
+ * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
+ */
+function getUniqueThreadId(threadUrl) {
+  const url = new URL(threadUrl);
+  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
+  const pathSegments = url.pathname.split('/');
+  // Find the segment that starts with a number and contains a hyphen
+  // e.g., "133067-mercy-for-none-s01-..."
+  const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
+
+  if (topicSegment) {
+    return topicSegment.split('-')[0]; // Extract just the number
+  } else {
+    // Fallback if the numerical ID pattern is not found
+    logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
+    return Buffer.from(threadUrl).toString('base64');
+  }
 }
 
 /**
  * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
- * @param {string} magnetUri The magnet URI string.
- * @returns {string|null} The 40-character BTIH as a string, or null if not found/invalid.
+ * This is a helper function to ensure a consistent way to get BTIH from a magnet URI string.
+ * This function is now also present in processor.ts, but kept here for local usage if needed.
+ * @param magnetUri The magnet URI string.
+ * @returns The 40-character BTIH as a string, or null if not found/invalid.
  */
 function extractBtihFromMagnet(magnetUri) {
   const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
@@ -132,7 +172,7 @@ function extractBtihFromMagnet(magnetUri) {
 
 /**
  * Fetches the best trackers from ngosang's list and caches them.
- * @returns {Promise<void>}
+ * This function is modified to ensure explicit type handling for compiler stability.
  */
 async function fetchAndCacheBestTrackers() {
   const now = Date.now();
@@ -145,15 +185,15 @@ async function fetchAndCacheBestTrackers() {
 
   logger.info('Fetching latest best trackers...');
   try {
-    const response = await axios.get(config.NGOSANG_TRACKERS_URL, {
-        timeout: 15000 // Added a 15-second timeout for tracker fetch
-    });
+    const response = await axios.get(config.NGOSANG_TRACKERS_URL);
+    // Trackers are typically newline-separated
     const rawTrackers = response.data.split('\n');
 
+    // Process and format trackers with explicit type filtering
     const formattedTrackers = rawTrackers
-      .map(t => t.trim())
-      .filter(tracker => !!tracker) // Ensure tracker is not empty string
-      .map(tracker => `tracker:${tracker}`);
+      .map((t) => t.trim()) // Trim whitespace from each tracker
+      .filter((tracker) => !!tracker) // Explicitly filter out empty strings and assert type
+      .map((tracker) => `tracker:${tracker}`); // Format as 'tracker:<URL>'
     
     cachedBestTrackers = formattedTrackers;
     lastTrackerUpdate = now;
@@ -170,22 +210,20 @@ async function fetchAndCacheBestTrackers() {
   }
 }
 
+
 /**
  * Crawls a single forum page to discover new threads.
- * @param {number} pageNum The page number to crawl.
- * @returns {Promise<boolean>} True if the page was successfully crawled and new threads were found, false otherwise.
+ * @param pageNum The page number to crawl.
+ * @returns True if the page was successfully crawled and new threads were found, false otherwise.
  */
 async function crawlForumPage(pageNum) {
   const url = `${config.FORUM_URL}${pageNum > 1 ? `page/${pageNum}/` : ''}`;
   logger.info(`Crawling forum page: ${url}`);
 
   const html = await fetchHtml(url);
-  // Added log to confirm HTML fetch result
-  if (html) {
-    logger.info(`Successfully fetched HTML for page ${pageNum}.`);
-  } else {
+  if (!html) {
     logger.warn(`Could not fetch HTML for page ${pageNum}. Assuming end of pagination.`);
-    return false;
+    return false; // Indicates end of pagination or critical error, stop crawling this page
   }
 
   const threadUrls = discoverThreadUrls(html, url);
@@ -193,95 +231,89 @@ async function crawlForumPage(pageNum) {
 
   if (threadUrls.length === 0) {
     logger.info(`No new relevant threads found on page ${pageNum}. Ending new page crawl.`);
-    return false;
+    return false; // No threads means likely end of new pages or structure changed
   }
 
+  // Use a worker thread pool for parallel processing if MAX_CONCURRENCY > 1
   const processingPromises = [];
   for (const threadUrl of threadUrls) {
+    // Use the new robust function to get the unique threadId
     const threadId = getUniqueThreadId(threadUrl);
     
-    try {
-        // Direct call to redisClient.hgetall
-        const lastProcessed = await redisClient.hgetall(`thread:${threadId}`); 
-        const now = new Date().toISOString();
+    // Check if thread already processed or updated recently (using thread:{threadId} hash)
+    const lastProcessed = await hgetall(`thread:${threadId}`);
+    const now = new Date().toISOString();
 
-        const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
-        const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
+    // If the thread has not been processed or needs re-visiting
+    const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000; // hours to ms
+    const lastModifiedTimestamp = lastProcessed.timestamp ? new Date(lastProcessed.timestamp).getTime() : 0;
 
-        if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
-          logger.info(`Processing new or updated thread: ${threadUrl}`);
-          processingPromises.push(
-            (async () => {
-              const processedData = await processThread(threadUrl);
-              if (processedData) {
-                await saveThreadData(processedData);
-                // Direct call to redisClient.hmset
-                await redisClient.hmset(`thread:${processedData.threadId}`, {
-                  url: threadUrl,
-                  timestamp: now,
-                  status: 'processed'
-                });
-              }
-            })()
-          );
-          if (processingPromises.length >= config.MAX_CONCURRENCY) {
-            await Promise.all(processingPromises);
-            processingPromises.length = 0;
+    // The logic here is correct: if not processed before, or if enough time has passed, process it.
+    // The "skipping" logs come from threads that WERE processed in the *same batch* and thus had their timestamp updated in Redis.
+    if (!lastProcessed.timestamp || (Date.now() - lastModifiedTimestamp) > revisitThreshold) {
+      logger.info(`Processing new or updated thread: ${threadUrl}`);
+      processingPromises.push(
+        (async () => {
+          const processedData = await processThread(threadUrl);
+          if (processedData) {
+            // Store processed data in Redis (movie, episode, thread hashes)
+            await saveThreadData(processedData);
+            // Update thread tracking hash
+            await hmset(`thread:${processedData.threadId}`, { // Use processedData.threadId to ensure consistency
+              url: threadUrl,
+              timestamp: now,
+              status: 'processed'
+            });
           }
-        } else {
-          logger.info(`Thread ${threadUrl} recently processed. Skipping.`);
-        }
-    } catch (error) {
-        logger.error(`Error checking/processing thread ${threadUrl}:`, error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: `Error in crawlForumPage for thread: ${threadUrl}`,
-            error: error.message,
-            url: threadUrl
-        });
+        })()
+      );
+      // Basic concurrency concurrency control (can be enhanced with a proper queue/worker pool)
+      if (processingPromises.length >= config.MAX_CONCURRENCY) {
+        await Promise.all(processingPromises);
+        processingPromises.length = 0; // Clear the array
+      }
+    } else {
+      logger.info(`Thread ${threadUrl} recently processed. Skipping.`);
     }
   }
 
+  // Await any remaining processing promises
   await Promise.all(processingPromises);
+
+  // Return true if any threads were discovered, even if not new
   return threadUrls.length > 0;
 }
 
 /**
  * Saves processed thread data into Redis according to the defined schema.
- * This function now groups streams under a series-season "movie" entry.
- * @param {ThreadContent} data The processed thread content.
- * @returns {Promise<void>}
+ * Updated to use infoHash and sources for Stremio stream objects.
+ * @param data The processed thread content.
  */
 async function saveThreadData(data) {
-  const { title, posterUrl, magnets, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
+  // Destructure relevant fields, including initialThreadStartedTime for type guarding
+  const { title, posterUrl, magnets, timestamp, threadId, originalUrl, threadStartedTime: initialThreadStartedTime } = data;
   
+  // Explicitly ensure threadStartedTime is a string, providing a fallback.
+  // This robust type guard ensures 'finalThreadStartedTime' is always of type 'string' at compile time.
   let finalThreadStartedTime;
   if (typeof initialThreadStartedTime === 'string') {
     finalThreadStartedTime = initialThreadStartedTime;
   } else {
-    logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${data.threadId}. Using current timestamp as fallback.`);
+    logger.warn(`threadStartedTime was unexpectedly not a string for threadId ${threadId}. Using current timestamp as fallback.`);
     finalThreadStartedTime = new Date().toISOString(); 
   }
   
   const now = new Date();
 
-  // Parse original thread title for detailed metadata
+  // Using the title parser to get more structured data (season, episode, etc.) from overall thread title
   const parsedThreadTitleMetadata = parseTitle(title);
   const { 
-    baseShowName, // NEW: The very clean base show name
-    title: fullDisplayTitleForStream, // The full display title including episode for stream titles
+    baseShowName, 
     year: threadYear, 
     season: threadSeason, 
     episodeStart: threadEpisodeStart, 
-    episodeEnd: threadEpisodeEnd, 
-    languages: threadLanguages, 
-    resolutions: threadResolutions, 
-    qualityTags: threadQualityTags, 
-    codecs: threadCodecs, 
-    audioCodecs: threadAudioCodecs, 
-    sizes: threadSizes, 
-    hasESub: threadHasESub 
+    episodeEnd: threadEpisodeEnd,
+    languages: threadLanguages
   } = parsedThreadTitleMetadata;
 
   const yearNum = threadYear || new Date(finalThreadStartedTime).getFullYear(); // Fallback to thread start year if no year parsed
@@ -289,43 +321,42 @@ async function saveThreadData(data) {
 
   // --- Create/Update "Movie Group" Catalog Entry (represents Series-Season) ---
   // The originalTitle for the catalog item should be "Base Title (Year) SXX"
-  // Use cleanBaseTitleForCatalog to explicitly construct the catalog title
   const cleanedBaseCatalogTitle = cleanBaseTitleForCatalog(baseShowName, yearNum, seasonNum);
   const normalizedBaseCatalogId = normalizeTitle(cleanedBaseCatalogTitle);
   // This ID is for the catalog item itself, which groups streams
   const stremioMovieGroupId = `tt${normalizedBaseCatalogId}`; 
 
-  const movieGroupKey = `movie:${stremioMovieGroupId}`; // Redis key for the movie group entry
+  const movieKey = `movie:${stremioMovieGroupId}`; // Redis key for the movie group entry
 
   // Log the identified Movie Key for Catalog
-  logger.info(`Identified Movie Key for Catalog: ${movieGroupKey} (Cleaned Title: "${cleanedBaseCatalogTitle}")`);
+  logger.info(`Identified Movie Key for Catalog: ${movieKey} (Cleaned Title: "${cleanedBaseCatalogTitle}")`);
 
   try {
-    const existingMovieGroupData = await redisClient.hgetall(movieGroupKey);
+    const existingMovieGroupData = await hgetall(movieKey);
     // Only create/update if new or strong fuzzy match for the base title
     if (!existingMovieGroupData || fuzzyMatch(cleanedBaseCatalogTitle, existingMovieGroupData.originalTitle || '', 0.9)) { 
-        await redisClient.hmset(movieGroupKey, {
+        await hmset(movieKey, {
             originalTitle: cleanedBaseCatalogTitle, // The cleaned series-season title
             posterUrl: posterUrl,
             stremioId: stremioMovieGroupId, // The ID Stremio will use for meta/stream requests
             lastUpdated: now.toISOString(),
-            associatedThreadId: data.threadId,
+            associatedThreadId: threadId, // Link back to the original threadId
             threadStartedTime: finalThreadStartedTime,
             languages: JSON.stringify(threadLanguages),
             seasons: JSON.stringify([seasonNum]), // Store seasons as array
         });
-        logger.info(`Created/Updated movie group data for ${movieGroupKey} (ID: ${stremioMovieGroupId}, Title: "${cleanedBaseCatalogTitle}")`);
+        logger.info(`Created/Updated movie group data for ${movieKey} (ID: ${stremioMovieGroupId}, Title: "${cleanedBaseCatalogTitle}")`);
     } else {
         // Just update lastUpdated if not a new entry or significant change
-        await redisClient.hset(movieGroupKey, 'lastUpdated', now.toISOString());
-        logger.info(`Updated existing movie group data timestamp for ${movieGroupKey}.`);
+        await hset(movieKey, 'lastUpdated', now.toISOString());
+        logger.info(`Updated existing movie group data timestamp for ${movieKey}.`);
     }
   } catch (error) {
-      logger.error(`Error saving movie group data for ${movieGroupKey}:`, error);
+      logger.error(`Error saving movie group data for ${movieKey}:`, error);
       logger.logToRedisErrorQueue({
           timestamp: new Date().toISOString(),
           level: 'ERROR',
-          message: `Error saving movie group data for key: ${movieGroupKey}`,
+          message: `Error saving movie group data for key: ${movieKey}`,
           error: error.message,
           url: originalUrl
       });
@@ -335,13 +366,13 @@ async function saveThreadData(data) {
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
-      logger.warn(`Skipping magnet at index ${i} for thread ${data.threadId} due to missing URL.`);
+      logger.warn(`Skipping magnet at index ${i} for thread ${threadId} due to missing URL.`);
       continue;
     }
 
     const infoHash = extractBtihFromMagnet(magnet.url);
     if (!infoHash) {
-      logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${data.threadId}.`);
+      logger.warn(`Could not extract BTIH from magnet URL: ${magnet.url}. Skipping stream for thread ${threadId}.`);
       logger.logToRedisErrorQueue({
         timestamp: new Date().toISOString(),
         level: 'WARN',
@@ -351,48 +382,43 @@ async function saveThreadData(data) {
       continue;
     }
 
-    // Determine current episode number for this magnet, assuming sequential if range is given
-    let currentEpisodeNum = (threadEpisodeStart !== undefined) ? (threadEpisodeStart + i) : 1;
-    if (!threadEpisodeStart && !threadEpisodeEnd && magnets.length > 1) {
-        const epMatch = magnet.name?.match(/e(\d+)/i);
-        if (epMatch) {
-            currentEpisodeNum = parseInt(epMatch[1], 10);
-        } else {
-            currentEpisodeNum = i + 1;
-        }
+    // NEW: Use the parsedMetadata from the magnet itself for stream title and episode number
+    const parsedMagnetMetadata = magnet.parsedMetadata;
+    let currentEpisodeNum = parsedMagnetMetadata.episodeStart || (threadEpisodeStart !== undefined ? (threadEpisodeStart + i) : 1);
+    if (!parsedMagnetMetadata.episodeStart && !threadEpisodeStart && magnets.length > 1) {
+        // Fallback to sequential if no episode info found in magnet or thread
+        currentEpisodeNum = i + 1;
     }
     
-    // Determine the resolution for this specific stream
-    const streamResolution = magnet.resolution || (threadResolutions.length > 0 ? threadResolutions[0] : 'Unknown');
-
     // Generate streamName and streamTitle using the specific cleaning functions
-    const streamName = `TamilShows - ${streamResolution}`; // "TamilShows - resolution"
-    // Use the fullDisplayTitleForStream from parseTitle, which includes episode info, for the stream title
-    const streamTitle = cleanStreamDetailsTitle(magnet.name || fullDisplayTitleForStream, streamResolution); 
+    // streamName for Stremio UI (e.g., "TamilShows - 720p HD")
+    const streamName = `TamilShows - ${parsedMagnetMetadata.resolutions[0] || 'Unknown'}${parsedMagnetMetadata.qualityTags.length > 0 ? ' ' + parsedMagnetMetadata.qualityTags[0].toUpperCase() : ''}`; 
+    // streamTitle for Stremio UI (e.g., "Beast Games S01 EP10 - HQ")
+    const streamTitle = cleanStreamDetailsTitle(parsedMagnetMetadata); 
 
     // The unique ID for this specific stream, linked to the movie_group ID
-    const streamId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(streamResolution)}-${infoHash}`;
+    const streamId = `${stremioMovieGroupId}:s${seasonNum}e${currentEpisodeNum}:${normalizeTitle(parsedMagnetMetadata.resolutions[0] || 'unknown')}:${infoHash}`;
     const streamDataKey = `stream:${streamId}`; // Redis key for the individual stream data
 
     // Log the stream identified by the fuzzy logic (this is the streamKey)
     logger.info(`Identified Stream Key: ${streamDataKey} (Stream Title: "${streamTitle}")`);
 
     try {
-        await redisClient.hmset(streamDataKey, {
+        await hmset(streamDataKey, {
           parentMovieId: stremioMovieGroupId, // Link back to parent movie group ID
           infoHash: infoHash,
           sources: JSON.stringify(cachedBestTrackers),
-          name: streamName, // "TamilShows - 1080p"
-          title: streamTitle, // "Suits LA (2025) S01 EP11 - LQ"
-          size: magnet.size || '',
-          resolution: streamResolution,
+          name: streamName, 
+          title: streamTitle, 
+          size: magnet.size || '', 
+          resolution: magnet.resolution || '', 
           timestamp: now.toISOString(),
           threadUrl: originalUrl,
-          languages: JSON.stringify(threadLanguages),
-          qualityTags: JSON.stringify(threadQualityTags),
-          codecs: JSON.stringify(threadCodecs),
-          audioCodecs: JSON.stringify(threadAudioCodecs),
-          hasESub: threadHasESub ? 'true' : 'false',
+          languages: JSON.stringify(parsedMagnetMetadata.languages), // Use languages from magnet's metadata
+          qualityTags: JSON.stringify(parsedMagnetMetadata.qualityTags), // Use qualityTags from magnet's metadata
+          codecs: JSON.stringify(parsedMagnetMetadata.codecs),
+          audioCodecs: JSON.stringify(parsedMagnetMetadata.audioCodecs),
+          hasESub: parsedMagnetMetadata.hasESub ? 'true' : 'false',
           episodeNumber: currentEpisodeNum.toString(),
           seasonNumber: seasonNum.toString(),
         });
@@ -408,11 +434,24 @@ async function saveThreadData(data) {
         });
     }
   }
+
+  // Update languages for the movie hash if new languages are found
+  if (parsedThreadTitleMetadata.languages && parsedThreadTitleMetadata.languages.length > 0) {
+    const existingLanguagesString = await hgetall(movieKey).then(data => data.languages);
+    const existingLanguages = existingLanguagesString ? JSON.parse(existingLanguagesString) : [];
+    const mergedLanguages = Array.from(new Set([...existingLanguages, ...parsedThreadTitleMetadata.languages]));
+    await hset(movieKey, 'languages', JSON.stringify(mergedLanguages));
+  }
+
+  // Update seasons field in movie hash to record discovered seasons
+  const existingSeasonsString = await hgetall(movieKey).then(data => data.seasons);
+  const existingSeasons = existingSeasonsString ? JSON.parse(existingSeasonsString) : [];
+  const mergedSeasons = Array.from(new Set([...existingSeasons, seasonNum])).sort((a,b) => a - b);
+  await hset(movieKey, 'seasons', JSON.stringify(mergedSeasons));
 }
 
 /**
  * Periodically crawls new forum pages to discover new content.
- * @returns {Promise<void>}
  */
 async function crawlNewPages() {
   logger.info('Starting new page crawl...');
@@ -422,9 +461,11 @@ async function crawlNewPages() {
   while (hasMorePages && (config.INITIAL_PAGES === 0 || pageCounter <= config.INITIAL_PAGES)) {
     hasMorePages = await crawlForumPage(pageCounter);
     if (hasMorePages) {
-      currentPage = pageCounter;
+      currentPage = pageCounter; // Update current page to the last successfully crawled page
       pageCounter++;
     } else {
+      // If a page yields no new threads or an error, stop crawling newer pages.
+      // Reset currentPage for the next run if it's the end of content.
       logger.info(`Ended new page crawl at page ${pageCounter}.`);
     }
   }
@@ -433,95 +474,64 @@ async function crawlNewPages() {
 
 /**
  * Periodically re-visits existing threads to check for updates.
- * @returns {Promise<void>}
+ * This function will fetch threads that were last updated X hours ago.
  */
 async function revisitExistingThreads() {
   logger.info('Starting existing thread revisit...');
-  try {
-    // Direct call to redisClient.keys
-    const threadKeys = await redisClient.keys('thread:*');
+  // Get all thread keys
+  const threadKeys = await redisClient.keys('thread:*');
 
-    const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000;
-    const now = Date.now(); 
+  const revisitThreshold = config.THREAD_REVISIT_HOURS * 60 * 60 * 1000; // hours to ms
+  const now = Date.now(); 
 
-    const threadsToRevisit = [];
+  const threadsToRevisit = [];
 
-    for (const key of threadKeys) {
-      try {
-        // Direct call to redisClient.hgetall
-        const threadData = await redisClient.hgetall(key);
-        if (threadData.timestamp) {
-          const lastProcessedTime = new Date(threadData.timestamp).getTime();
-          if (now - lastProcessedTime > revisitThreshold) {
-            threadsToRevisit.push(threadData.url);
-          }
-        } else {
-          if (threadData.url) {
-            threadsToRevisit.push(threadData.url);
-          }
-        }
-      } catch (error) {
-        logger.error(`Error fetching thread data for key ${key} during revisit check:`, error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: `Error fetching thread data for key ${key} during revisit check`,
-            error: error.message,
-            url: key // Using key as URL context
-        });
+  for (const key of threadKeys) {
+    const threadData = await hgetall(key);
+    if (threadData.timestamp) {
+      const lastProcessedTime = new Date(threadData.timestamp).getTime();
+      if (now - lastProcessedTime > revisitThreshold) {
+        threadsToRevisit.push(threadData.url);
+      }
+    } else {
+      // If timestamp is missing, it's an old entry or improperly stored, revisit it.
+      if (threadData.url) {
+        threadsToRevisit.push(threadData.url);
       }
     }
-
-    const processingPromises = [];
-    for (const threadUrl of threadsToRevisit) {
-      processingPromises.push(
-        (async () => {
-          try {
-            const processedData = await processThread(threadUrl);
-            if (processedData) {
-              await saveThreadData(processedData);
-              // Direct call to redisClient.hmset
-              await redisClient.hmset(`thread:${processedData.threadId}`, {
-                url: threadUrl,
-                timestamp: new Date().toISOString(),
-                status: 'processed'
-              });
-            }
-          } catch (error) {
-            logger.error(`Error processing revisited thread ${threadUrl}:`, error);
-            logger.logToRedisErrorQueue({
-                timestamp: new Date().toISOString(),
-                level: 'ERROR',
-                message: `Error processing revisited thread: ${threadUrl}`,
-                error: error.message,
-                url: threadUrl
-            });
-          }
-        })()
-      );
-      if (processingPromises.length >= config.MAX_CONCURRENCY) {
-        await Promise.all(processingPromises);
-        processingPromises.length = 0;
-      }
-    }
-    await Promise.all(processingPromises);
-    logger.info(`Revisited ${threadsToRevisit.length} existing threads.`);
-  } catch (error) {
-    logger.error('Error in revisitExistingThreads:', error);
-    logger.logToRedisErrorQueue({
-        timestamp: new Date().toISOString(),
-        level: 'ERROR',
-        message: 'Error in revisitExistingThreads',
-        error: error.message
-    });
   }
+
+  // Process threads to revisit with concurrency
+  const processingPromises = [];
+  for (const threadUrl of threadsToRevisit) {
+    processingPromises.push(
+      (async () => {
+        const processedData = await processThread(threadUrl);
+        if (processedData) {
+          await saveThreadData(processedData);
+          const threadId = getUniqueThreadId(threadUrl); // Use the robust unique ID function
+          await hmset(`thread:${threadId}`, {
+            url: threadUrl,
+            timestamp: new Date().toISOString(),
+            status: 'processed'
+          });
+        }
+      })()
+    );
+    if (processingPromises.length >= config.MAX_CONCURRENCY) {
+      await Promise.all(processingPromises);
+      processingPromises.length = 0;
+    }
+  }
+  await Promise.all(processingPromises);
+  logger.info(`Revisited ${threadsToRevisit.length} existing threads.`);
 }
 
 /**
  * Starts the main crawler loop.
- * @returns {void}
+ * This function initiates scheduled crawling for new pages and existing threads.
  */
-function startCrawler() {
+export function startCrawler() {
   if (isCrawling) {
     logger.info('Crawler is already running.');
     return;
@@ -529,86 +539,28 @@ function startCrawler() {
   isCrawling = true;
   logger.info('Stremio Addon Crawler started.');
 
-  // Initial calls wrapped in an async IIFE to ensure they are awaited
+  // Initial fetch and schedule for best trackers
   (async () => {
-    try {
-        if (config.PURGE_ON_START) { // Only purge if PURGE_ON_START is true
-            logger.info('Initiating Redis purge...');
-            await redisClient.purgeRedis();
-            logger.info('Redis purge completed.');
-        }
-        logger.info('Starting initial fetch and cache of best trackers...');
-        await fetchAndCacheBestTrackers();
-        logger.info('Initial fetch and cache of best trackers completed.');
-
-        logger.info('Starting initial new page crawl...');
-        await crawlNewPages();
-        logger.info('Initial new page crawl completed.');
-
-        logger.info('Starting initial revisit of existing threads...');
-        await revisitExistingThreads();
-        logger.info('Initial revisit of existing threads completed.');
-
-    } catch (error) {
-        logger.error('Error during initial crawler startup:', error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: 'Error during initial crawler startup',
-            error: error.message
-        });
-    }
+    await fetchAndCacheBestTrackers(); // Fetch trackers on startup
+    await crawlNewPages();
+    await revisitExistingThreads();
   })();
 
   // Schedule new page crawls
   setInterval(async () => {
     logger.info('Scheduled crawl for new pages triggered.');
-    try {
-        await crawlNewPages();
-    } catch (error) {
-        logger.error('Error during scheduled new page crawl:', error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: 'Error during scheduled new page crawl',
-            error: error.message
-        });
-    }
-  }, config.CRAWL_INTERVAL * 1000);
+    await crawlNewPages();
+  }, config.CRAWL_INTERVAL * 1000); // Convert seconds to milliseconds
 
   // Schedule existing thread revisits
   setInterval(async () => {
     logger.info('Scheduled revisit for existing threads triggered.');
-    try {
-        await revisitExistingThreads();
-    } catch (error) {
-        logger.error('Error during scheduled revisit of existing threads:', error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: 'Error during scheduled revisit of existing threads',
-            error: error.message
-        });
-    }
-  }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000);
+    await revisitExistingThreads();
+  }, config.THREAD_REVISIT_HOURS * 60 * 60 * 1000); // Convert hours to milliseconds
 
   // Schedule periodic tracker updates
   setInterval(async () => {
     logger.info('Scheduled best trackers update triggered.');
-    try {
-        await fetchAndCacheBestTrackers();
-    } catch (error) {
-        logger.error('Error during scheduled best trackers update:', error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: 'Error during scheduled best trackers update',
-            error: error.message
-        });
-    }
-  }, config.TRACKER_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000);
+    await fetchAndCacheBestTrackers();
+  }, config.TRACKER_UPDATE_INTERVAL_HOURS * 60 * 60 * 1000); // Convert hours to milliseconds
 }
-
-module.exports = {
-  startCrawler,
-};
