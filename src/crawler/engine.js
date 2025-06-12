@@ -1,16 +1,16 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { config } = require('../config.js'); // Use .js extension
-const redisClient = require('../redis.js'); // Use .js extension; this is the primary Redis client export
-const { processThread } = require('./processor.js'); // Use .js extension for local files
-const { logger } = require('../utils/logger.js'); // Use .js extension
+const { config } = require('../config.js');
+const redisClient = require('../redis.js');
+const { processThread } = require('./processor.js');
+const { logger } = require('../utils/logger.js');
 const { 
   normalizeTitle, 
   parseTitle, 
   fuzzyMatch, 
   cleanBaseTitleForCatalog, 
   cleanStreamDetailsTitle 
-} = require('../parser/title.js'); // Use .js extension
+} = require('../parser/title.js');
 
 /**
  * @typedef {object} MagnetData
@@ -32,33 +32,24 @@ const {
  * @property {string} threadStartedTime
  */
 
-// Global variable to hold the current page number for new content crawling
 let currentPage = 1;
-let isCrawling = false; // Flag to prevent multiple concurrent crawls
-
-// Global variables for best trackers caching
+let isCrawling = false;
 let cachedBestTrackers = [];
-let lastTrackerUpdate = 0; // Timestamp of the last successful update in milliseconds
+let lastTrackerUpdate = 0;
 
 /**
  * Extracts a unique numerical thread ID from a forum topic URL.
- * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
- * Moved here to be the single source of truth for thread ID generation, used by both engine and processor.
  * @param {string} threadUrl The URL of the forum thread.
  * @returns {string} The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
  */
 function getUniqueThreadId(threadUrl) {
   const url = new URL(threadUrl);
-  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
   const pathSegments = url.pathname.split('/');
-  // Find the segment that starts with a number and contains a hyphen
-  // e.g., "133067-mercy-for-none-s01-..."
   const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
 
   if (topicSegment) {
-    return topicSegment.split('-')[0]; // Extract just the number
+    return topicSegment.split('-')[0];
   } else {
-    // Fallback if the numerical ID pattern is not found
     logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
     return Buffer.from(threadUrl).toString('base64');
   }
@@ -101,7 +92,7 @@ async function fetchHtml(url, retries = 3) {
       },
       maxRedirects: 10,
       validateStatus: (status) => status >= 200 && status < 400,
-      timeout: 15000 // Added a 15-second timeout for HTML fetches
+      timeout: 15000
     });
 
     if (response.status >= 300 && response.status < 400) {
@@ -171,7 +162,7 @@ async function fetchAndCacheBestTrackers() {
   logger.info('Fetching latest best trackers...');
   try {
     const response = await axios.get(config.NGOSANG_TRACKERS_URL, {
-        timeout: 15000 // Added a 15-second timeout for tracker fetch
+        timeout: 15000
     });
     const rawTrackers = response.data.split('\n');
 
@@ -271,7 +262,6 @@ async function crawlForumPage(pageNum) {
 
 /**
  * Saves processed thread data into Redis according to the defined schema.
- * This function now groups streams under a series-season "movie" entry.
  * @param {ThreadContent} data The processed thread content.
  * @returns {Promise<void>}
  */
@@ -288,7 +278,6 @@ async function saveThreadData(data) {
   
   const now = new Date();
 
-  // Using the title parser to get more structured data (season, episode, etc.) from overall thread title
   const parsedThreadTitleMetadata = parseTitle(title);
   const { 
     baseShowName, 
@@ -300,7 +289,6 @@ async function saveThreadData(data) {
   const yearNum = threadYear || new Date(finalThreadStartedTime).getFullYear();
   const seasonNum = threadSeason || 1;
 
-  // --- Create/Update "Movie Group" Catalog Entry (represents Series-Season) ---
   const cleanedBaseCatalogTitle = cleanBaseTitleForCatalog(baseShowName, yearNum, seasonNum);
   const normalizedBaseCatalogId = normalizeTitle(cleanedBaseCatalogTitle);
   const stremioMovieGroupId = `tt${normalizedBaseCatalogId}`; 
@@ -338,7 +326,6 @@ async function saveThreadData(data) {
       });
   }
 
-  // --- Process and save each magnet as a distinct "stream_data" entry ---
   for (let i = 0; i < magnets.length; i++) {
     const magnet = magnets[i];
     if (!magnet || !magnet.url) {
@@ -506,7 +493,7 @@ function startCrawler() {
     try {
         if (config.PURGE_ON_START) { 
             logger.info('Initiating Redis purge...');
-            await redisClient.purgeRedis(); // Call purgeRedis as a method on the client
+            await redisClient.purgeRedis();
             logger.info('Redis purge completed.');
         }
         logger.info('Starting initial fetch and cache of best trackers...');
@@ -580,5 +567,6 @@ function startCrawler() {
 
 module.exports = {
   startCrawler,
-  getUniqueThreadId // Export getUniqueThreadId for use in processor.js
+  getUniqueThreadId, // Export getUniqueThreadId for use in processor.js
+  extractBtihFromMagnet // Export extractBtihFromMagnet as it's a shared utility
 };
