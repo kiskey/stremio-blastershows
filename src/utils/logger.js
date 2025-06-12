@@ -1,12 +1,12 @@
-const { config, LogLevel } = require('../config');
-const redisClient = require('../redis'); // Import redis client to push errors to queue
+const { config, LogLevel } = require('../config.js'); // Ensure .js extension
+const redisClient = require('../redis.js'); // Ensure .js extension
 
 /**
  * Custom Logger class to manage logging levels and output.
  * Also includes functionality to push errors to a Redis queue.
  */
 class Logger {
-  /** @type {LogLevel} */
+  /** @type {number} */
   #currentLogLevel; // Private field for current log level
 
   constructor() {
@@ -15,11 +15,13 @@ class Logger {
 
   /**
    * Updates the logging level.
-   * @param {LogLevel} newLevel The new logging level to set.
+   * @param {number} newLevel The new logging level to set (from LogLevel enum).
    */
   setLogLevel(newLevel) {
     this.#currentLogLevel = newLevel;
-    this.info(`Log level set to: ${Object.keys(LogLevel).find(key => LogLevel[key] === newLevel)}`);
+    // Find the string name for the LogLevel for logging clarity
+    const levelName = Object.keys(LogLevel).find(key => LogLevel[key] === newLevel);
+    this.info(`Log level set to: ${levelName}`);
   }
 
   /**
