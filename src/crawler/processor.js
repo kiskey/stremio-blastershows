@@ -1,14 +1,14 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-// Import MagnetData and ThreadContent interfaces from engine.ts (single source of truth)
-import { ThreadContent, MagnetData } from './engine';
-// Correct import and initialization for DOMPurify with JSDOM
-import createDOMPurify from 'dompurify';
-import { JSDOM } from 'jsdom';
-// Using js-levenshtein for Jaro-Winkler, as specified in requirements.
-import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
-import { parseTitle } from '../parser/title'; // Import parseTitle
-import { logger } from '../utils/logger'; // Import the centralized logger
+const axios = require('axios');
+const cheerio = require('cheerio');
+// Import MagnetData and ThreadContent interfaces from engine.js (single source of truth)
+// Note: In JavaScript, interfaces are typically defined via JSDoc or separate type definition files.
+// For runtime, these are just objects.
+const { getUniqueThreadId } = require('./engine.js'); // Use .js extension for local files
+const createDOMPurify = require('dompurify');
+const { JSDOM } = require('jsdom');
+const { jaroWinkler } = require('js-levenshtein'); // Still named import for jaroWinkler
+const { parseTitle } = require('../parser/title.js'); // Use .js extension
+const { logger } = require('../utils/logger.js'); // Use .js extension
 
 /**
  * @typedef {object} ParsedTitleMetadata
@@ -28,14 +28,32 @@ import { logger } from '../utils/logger'; // Import the centralized logger
  * @property {string} originalTitle - The original raw title string.
  */
 
-// Removed duplicate MagnetData interface definition.
-// It is now imported from engine.ts as the single source of truth.
+/**
+ * @typedef {object} MagnetData
+ * @property {string} url
+ * @property {string} name
+ * @property {string} [size]
+ * @property {string} [resolution]
+ * @property {ParsedTitleMetadata} [parsedMetadata]
+ */
+
+/**
+ * @typedef {object} ThreadContent
+ * @property {string} title
+ * @property {string} posterUrl
+ * @property {MagnetData[]} magnets
+ * @property {string} timestamp
+ * @property {string} threadId
+ * @property {string} originalUrl
+ * @property {string} threadStartedTime
+ */
+
 
 /**
  * Fetches the content of a given URL with error handling and retries.
- * @param url The URL to fetch.
- * @param retries Remaining retries.
- * @returns The HTML content as a string, or null if fetching fails.
+ * @param {string} url The URL to fetch.
+ * @param {number} [retries=3] Remaining retries.
+ * @returns {Promise<string|null>} The HTML content as a string, or null if fetching fails.
  */
 async function fetchHtmlForProcessing(url, retries = 3) {
   try {
@@ -70,8 +88,8 @@ async function fetchHtmlForProcessing(url, retries = 3) {
 
 /**
  * Validates a magnet URI using a BTIH regex.
- * @param uri The magnet URI string.
- * @returns True if the URI is a valid magnet, false otherwise.
+ * @param {string} uri The magnet URI string.
+ * @returns {boolean} True if the URI is a valid magnet, false otherwise.
  */
 function validateMagnetUri(uri) {
   // BTIH regex for magnet URI validation
@@ -81,8 +99,8 @@ function validateMagnetUri(uri) {
 
 /**
  * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
- * @param magnetUri The magnet URI string.
- * @returns The 40-character BTIH as a string, or null if not found/invalid.
+ * @param {string} magnetUri The magnet URI string.
+ * @returns {string|null} The 40-character BTIH as a string, or null if not found/invalid.
  */
 function extractBtihFromMagnet(magnetUri) {
   const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
@@ -94,8 +112,8 @@ function extractBtihFromMagnet(magnetUri) {
 
 /**
  * Parses the 'dn' (display name) parameter from a magnet URI.
- * @param magnetUri The magnet URI string.
- * @returns The decoded display name string, or null if not found.
+ * @param {string} magnetUri The magnet URI string.
+ * @returns {string|null} The decoded display name string, or null if not found.
  */
 function parseDnFromMagnetUri(magnetUri) {
   try {
@@ -110,33 +128,13 @@ function parseDnFromMagnetUri(magnetUri) {
   return null;
 }
 
-/**
- * Extracts a unique numerical thread ID from a forum topic URL.
- * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
- * @param threadUrl The URL of the forum thread.
- * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
- */
-function getUniqueThreadId(threadUrl) {
-  const url = new URL(threadUrl);
-  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
-  const pathSegments = url.pathname.split('/');
-  // Find the segment that starts with a number and contains a hyphen
-  // e.g., "133067-mercy-for-none-s01-..."
-  const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
-
-  if (topicSegment) {
-    return topicSegment.split('-')[0]; // Extract just the number
-  } else {
-    // Fallback if the numerical ID pattern is not found
-    logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
-    return Buffer.from(threadUrl).toString('base64');
-  }
-}
+// NOTE: getUniqueThreadId is now imported from engine.js. It was previously in processor.js too.
+// This is to avoid duplication and ensure single source of truth for such utilities.
 
 /**
  * Processes a single forum thread page to extract relevant content.
- * @param threadUrl The URL of the forum thread page.
- * @returns A Promise resolving to ThreadContent object or null if processing fails.
+ * @param {string} threadUrl The URL of the forum thread page.
+ * @returns {Promise<ThreadContent|null>} A Promise resolving to ThreadContent object or null if processing fails.
  */
 async function processThread(threadUrl) {
   logger.info(`Processing thread: ${threadUrl}`);
@@ -149,15 +147,13 @@ async function processThread(threadUrl) {
 
   // Initialize DOMPurify with a JSDOM window for Node.js environment
   const window = new JSDOM('').window;
-  const purify = createDOMPurify(window); // Corrected initialization for DOMPurify
+  const purify = createDOMPurify(window);
 
 
   // Extract title: <span class="ipsType_break ipsContained"> text
-  // Using .first() to ensure we get the first match in case of multiple
   const titleElement = $('span.ipsType_break.ipsContained').first();
   let title = titleElement.text().trim();
   if (!title) {
-    // Fallback parsing: Try other common title elements if the main one fails
     logger.warn(`Could not find primary title element for ${threadUrl}. Trying fallback.`);
     title = $('meta[property="og:title"]').attr('content')?.trim() || $('title').text().trim();
     if (!title) {
@@ -176,7 +172,6 @@ async function processThread(threadUrl) {
 
 
   // Extract posterUrl: <img class="ipsImage"> src attribute (first image in the post content)
-  // This might need refinement based on exact forum structure.
   const posterElement = $('div.ipsType_normal.ipsType_richText img.ipsImage').first();
   let posterUrl = posterElement.attr('src') || '';
 
@@ -205,10 +200,11 @@ async function processThread(threadUrl) {
   // Declare timestamp for when this thread was processed/last updated by the crawler
   const timestamp = new Date().toISOString();
 
-  // Generate a unique thread ID using the robust function
+  // Generate a unique thread ID using the robust function from engine.js
   const threadId = getUniqueThreadId(threadUrl);
 
   // --- REVISED MAGNET EXTRACTION LOGIC ---
+  /** @type {MagnetData[]} */
   const magnets = [];
   
   // Iterate over all magnet-plugin links
@@ -275,6 +271,7 @@ async function processThread(threadUrl) {
   });
 
 
+  /** @type {ThreadContent} */
   const processedContent = {
     title: title,
     posterUrl: posterUrl,
@@ -294,6 +291,6 @@ module.exports = {
   validateMagnetUri,
   extractBtihFromMagnet,
   parseDnFromMagnetUri,
-  getUniqueThreadId,
+  // getUniqueThreadId is no longer exported from here; it's used directly from engine.js
   processThread
 };
