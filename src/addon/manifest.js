@@ -1,46 +1,51 @@
-const { config } = require('../config');
+const { config } = require('../config.js'); // Ensure .js extension
 
 /**
- * Returns the Stremio Addon Manifest.
- * This function consolidates the manifest data defined in the requirements.
- * @returns {object} The Stremio addon manifest object.
+ * Stremio Addon Manifest object.
+ * @type {object}
+ * @property {string} id
+ * @property {string} version
+ * @property {string} name
+ * @property {string} description
+ * @property {string[]} resources
+ * @property {string[]} types
+ * @property {Array<object>} catalogs
+ * @property {string[]} idPrefixes
+ * @property {object} behaviorHints
  */
-function getManifest() {
-  return {
-    id: config.ADDON_ID,
-    version: "1.1.1", // Patch version incremented for this refinement
-    name: config.ADDON_NAME,
-    description: config.ADDON_DESCRIPTION,
-    resources: [
-      "catalog",
-      "meta",
-      "stream",
-      "search"
-    ],
-    types: [
-      "movie" // STRICTLY keeping "movie" as per instruction
-    ],
-    catalogs: [
-      {
-        type: "movie", // STRICTLY keeping "movie"
-        id: "tamil-content", // Generic catalog ID for all "movie" content
-        name: "Tamil Movies & Episodes", // Name reflecting the mixed content
-        extra: [
-          { name: "search", isRequired: false },
-          { name: "skip", isRequired: false }
-        ]
-      }
-    ],
-    idPrefixes: [
-      "tt" // Common prefix for IMDb IDs, generic enough for unique titles
-    ],
-    behaviorHints: {
-      configurable: false,
-      adult: false
+const manifest = {
+  id: config.ADDON_ID,
+  version: '1.0.0', // This can be managed via package.json or a build process
+  name: config.ADDON_NAME,
+  description: config.ADDON_DESCRIPTION,
+  
+  resources: [
+    'catalog',
+    'meta',
+    'stream',
+    'search'
+  ],
+  types: [
+    'movie' // Corrected to 'movie' type as per your instruction
+  ],
+  catalogs: [
+    {
+      type: 'movie', // Corrected to 'movie' type for consistency with global types
+      id: 'tamil-web-series',
+      name: 'Tamil Web Series', // Note: This name still says "Web Series" but the type is now "movie"
+      extra: [
+        { name: 'search', isRequired: false },
+        { name: 'skip', isRequired: false }
+      ]
     }
-  };
-}
-
-module.exports = {
-  getManifest
+  ],
+  idPrefixes: [
+    'tt' // Example prefix for Stremio IDs, useful for movie/series lookups
+  ],
+  behaviorHints: {
+    configurable: false,
+    adult: false
+  }
 };
+
+module.exports = { manifest };
