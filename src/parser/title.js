@@ -21,14 +21,14 @@ const { logger } = require('../utils/logger');
  */
 
 // --- Regex Patterns ---
-const REGEX_YEAR = /\(?(\d{4})\)?/g;
-const REGEX_SEASON = /(?:S(\d+)(?:-\s*S?(\d+))?|Season\s*(\d+)(?:-\s*Season\s*(\d+))?|s(\d+)(?:-s(\d+))?|season\s*(\d+)(?:-(\d+))?)/ig;
+const REGEX_YEAR = /\(?(\d{4})\)?/ig; // Added global and ignore case
+const REGEX_SEASON = /(?:S(\d+)(?:-\s*S?(\d+))?|Season\s*(\d+)(?:-\s*Season\s*(\d+))?|s(\d+)(?:-s(\d+))?|season\s*(\d+)(?:-(\d+))?|complete series|season\s*pack|full\s*season)/ig;
 const REGEX_EPISODE = /(?:E(?:P)?(\d+)(?:-(\d+))?|Episode(?:s)?\s*(\d+)(?:-(\d+))?|e(\d+)(?:-e(\d+))?|ep(\d+)(?:-ep(\d+))?)/ig;
-const REGEX_RESOLUTION = /(\d{3,4}p|4K)/ig;
-const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b)/ig;
+const REGEX_RESOLUTION = /(\d{3,4}p|4K|HD|HQ)/ig; // Added HD, HQ
+const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b)/ig; // Added '-' for language variations
 const REGEX_CODECS = /(x264|x265|HEVC|AVC|VP9)/ig;
 const REGEX_AUDIO_CODECS = /(AAC|DD5\.1|AC3|DTS|Opus|MP3)/ig;
-const REGEX_QUALITY_TAGS = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR)/ig;
+const REGEX_QUALITY_TAGS = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR|HQRip|HDRip)/ig; // Added HQRip, HDRip explicitly
 const REGEX_SIZE = /(\d+\.?\d*\s*[KMGT]?B)/ig;
 const REGEX_SUBTITLE = /(ESub|Subtitles?)/ig;
 const REGEX_FILE_EXTENSION = /\.(mkv|mp4|avi|mov|flv|wmv|webm|m4v)\b/ig;
@@ -116,14 +116,15 @@ function extractSeasons(text) {
     resetRegex(REGEX_SEASON);
     let match;
     while ((match = REGEX_SEASON.exec(text)) !== null) {
-        if (match[1]) seasons.add(parseInt(match[1], 10)); // S<num>
-        if (match[2]) seasons.add(parseInt(match[2], 10)); // S<num>-S?<num>
-        if (match[3]) seasons.add(parseInt(match[3], 10)); // Season <num>
-        if (match[4]) seasons.add(parseInt(match[4], 10)); // Season <num>-Season <num>
-        if (match[5]) seasons.add(parseInt(match[5], 10)); // s<num>
-        if (match[6]) seasons.add(parseInt(match[6], 10)); // s<num>-s<num>
-        if (match[7]) seasons.add(parseInt(match[7], 10)); // season <num> (last capture group for simple "season N")
-        if (match[8]) seasons.add(parseInt(match[8], 10)); // season <num>-<num>
+        // Capture groups for season variations: S1, S1-S2, Season 1, Season 1-2, s1, s1-s2, season 1, season 1-2
+        if (match[1]) seasons.add(parseInt(match[1], 10)); 
+        if (match[2]) seasons.add(parseInt(match[2], 10));
+        if (match[3]) seasons.add(parseInt(match[3], 10));
+        if (match[4]) seasons.add(parseInt(match[4], 10));
+        if (match[5]) seasons.add(parseInt(match[5], 10));
+        if (match[6]) seasons.add(parseInt(match[6], 10));
+        if (match[7]) seasons.add(parseInt(match[7], 10));
+        if (match[8]) seasons.add(parseInt(match[8], 10));
     }
     return Array.from(seasons).sort((a, b) => a - b);
 }
@@ -201,7 +202,8 @@ function extractLanguages(text) {
     let match;
     while ((match = REGEX_LANGUAGES.exec(text)) !== null) {
         const matchedText = match[0];
-        const cleanParts = matchedText.replace(/[\[\]]/g, '').split(/[+\s]/).filter(Boolean);
+        // Now splits by '+', space, or '-'
+        const cleanParts = matchedText.replace(/[\[\]]/g, '').split(/[+\s-]/).filter(Boolean);
         cleanParts.forEach(part => {
             const mappedLang = LANGUAGE_MAP[part.toLowerCase()];
             if (mappedLang) {
@@ -300,22 +302,8 @@ function extractHasESub(text) {
 }
 
 /**
- * Helper to remove all matched patterns from a string.
- * @param {string} text The original text.
- * @param {RegExp[]} patterns An array of RegExp objects (must be global).
- * @returns {string} The text with patterns removed.
- */
-function suppressPatterns(text, patterns) {
-    let cleaned = text;
-    patterns.forEach(pattern => {
-        resetRegex(pattern); // Ensure regex is reset
-        cleaned = cleaned.replace(pattern, ' '); // Replace with space to avoid word merging
-    });
-    return cleaned.replace(/\s+/g, ' ').trim(); // Reduce multiple spaces and trim
-}
-
-/**
  * Parses the title string and extracts relevant metadata, yielding a clean title.
+ * This function now iteratively removes matched patterns from `tempTitle`.
  * @param {string} titleString The raw title string from the source.
  * @returns {ParsedTitleMetadata} ParsedTitleMetadata object.
  */
@@ -334,19 +322,35 @@ function parseTitle(titleString) {
     hasESub: false,
   };
 
-  let tempTitle = titleString;
+  let tempTitle = titleString; // Working copy of the title string
 
-  // 1. Extract all specific metadata first
-  metadata.years = extractYears(tempTitle);
-  if (metadata.years.length > 0) metadata.year = metadata.years[0]; // Take first year found
+  // Define patterns to strip progressively. Order matters for clean results.
+  const strippingPatterns = [
+    REGEX_WEBSITE_DOMAIN,
+    REGEX_FILE_EXTENSION,
+    REGEX_RELEASE_GROUP,
+    REGEX_SUBTITLE, // Extract hasESub before stripping
+    REGEX_SIZE,
+    REGEX_AUDIO_CODECS,
+    REGEX_CODECS,
+    REGEX_QUALITY_TAGS,
+    REGEX_RESOLUTION,
+    REGEX_LANGUAGES, // Extract languages before stripping
+    REGEX_EPISODE,   // Extract episodes before stripping
+    REGEX_SEASON,    // Extract seasons before stripping
+    REGEX_YEAR,      // Extract year before stripping
+    /TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, // Addon's internal prefix
+    /[\(\[]\s*(?:[A-Z0-9\s.-]+)\s*[\)\]]/g, // Generic content in parentheses/brackets (e.g., source tags, random labels)
+    /[\-+\._]/g, // Replace common separators with spaces
+  ];
 
-  metadata.seasons = extractSeasons(tempTitle);
-  if (metadata.seasons.length > 0) metadata.season = metadata.seasons[0]; // Take first season found, for main metadata
-
-  metadata.episodes = extractEpisodes(tempTitle);
-  if (metadata.episodes.length > 0) {
-      metadata.episodeStart = metadata.episodes[0].start;
-      metadata.episodeEnd = metadata.episodes[0].end;
+  // Perform initial extractions before iterative stripping, as some require the full context
+  metadata.year = extractYears(tempTitle)[0]; // Get first year if any
+  metadata.season = extractSeasons(tempTitle)[0]; // Get first season if any
+  const episodes = extractEpisodes(tempTitle);
+  if (episodes.length > 0) {
+      metadata.episodeStart = episodes[0].start;
+      metadata.episodeEnd = episodes[0].end;
   } else {
       // Default to S1E1 if no specific season/episode found for consistency in data model
       metadata.season = metadata.season || 1;
@@ -354,39 +358,31 @@ function parseTitle(titleString) {
       metadata.episodeEnd = 1;
   }
 
+  // Extract other metadata that might be suppressed later
   metadata.resolutions = extractResolutions(tempTitle);
   metadata.languages = extractLanguages(tempTitle);
   metadata.codecs = extractCodecs(tempTitle);
   metadata.audioCodecs = extractAudioCodecs(tempTitle);
   metadata.qualityTags = extractQualityTags(tempTitle);
   metadata.sizes = extractSizes(tempTitle);
-  metadata.fileExtensions = extractFileExtensions(tempTitle); // Extracting but not necessarily used in metadata
   metadata.hasESub = extractHasESub(tempTitle);
 
-  // 2. Suppress all extracted patterns to get the "proper base title"
-  const patternsToSuppress = [
-      REGEX_YEAR, REGEX_SEASON, REGEX_EPISODE, REGEX_RESOLUTION,
-      REGEX_LANGUAGES, REGEX_CODECS, REGEX_AUDIO_CODECS, REGEX_QUALITY_TAGS,
-      REGEX_SIZE, REGEX_SUBTITLE, REGEX_FILE_EXTENSION, REGEX_WEBSITE_DOMAIN,
-      REGEX_RELEASE_GROUP, // Suppress release group tags too
-      /TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, // Suppress addon internal prefix
-      /[\(\[]\s*(?:[A-Z0-9\s.-]+)\s*[\)\]]/g, // Generic content in parentheses/brackets (e.g., source tags, random labels)
-  ];
-  
-  // Create a temporary string to perform suppression
-  let suppressedTitle = titleString;
-  patternsToSuppress.forEach(pattern => {
-    resetRegex(pattern); // Reset for each suppression
-    suppressedTitle = suppressedTitle.replace(pattern, ' ');
-  });
-  // Clean up any remaining stray punctuation and multiple spaces
-  suppressedTitle = suppressedTitle.replace(/[^a-zA-Z0-9\s]/g, ' ')
-                                   .replace(/\s+/g, ' ').trim();
+
+  // Iteratively strip patterns from tempTitle
+  for (const pattern of strippingPatterns) {
+    resetRegex(pattern);
+    tempTitle = tempTitle.replace(pattern, ' ');
+  }
+
+  // Final cleanup of remaining stray punctuation and multiple spaces
+  tempTitle = tempTitle.replace(/[^a-zA-Z0-9\s]/g, ' ') // Remove remaining non-alphanumeric (except spaces)
+                       .replace(/\s+/g, ' ').trim(); // Reduce multiple spaces and trim
 
   // Assign the heavily cleaned base name
-  metadata.baseShowName = suppressedTitle;
+  metadata.baseShowName = tempTitle;
 
-  // 3. Reconstruct the full display title for streams (using original parts where needed)
+
+  // Reconstruct the full display title for streams (using original parts where needed)
   let reconstructedDisplayTitleParts = [metadata.baseShowName];
   if (metadata.year && metadata.year !== 0) {
       reconstructedDisplayTitleParts.push(`(${metadata.year})`);
