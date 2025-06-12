@@ -26,7 +26,7 @@ const REGEX_SEASON = /(?:S(\d+)(?:-\s*S?(\d+))?|Season\s*(\d+)(?:-\s*Season\s*(\
 const REGEX_EPISODE = /(?:E(?:P)?(\d+)(?:-(\d+))?|Episode(?:s)?\s*(\d+)(?:-(\d+))?|e(\d+)(?:-e(\d+))?|ep(\d+)(?:-ep(\d+))?)/ig;
 const REGEX_RESOLUTION = /(\d{3,4}p|4K|HD|HQ)/ig;
 // Updated REGEX_LANGUAGES to capture various forms: [lang+lang], lang-lang, lang lang, standalone lang, and new abbreviations
-const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por|jap|ml|kn)\b|Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Portugu\s*ese)\b/ig;
+const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap|Kor)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi|Tel|ML|Kn|Jap|Kor))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por|jap|ml|kn)\b|Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Portugu\s*ese|Jap|Kor)\b/ig;
 const REGEX_CODECS = /(x264|x265|HEVC|AVC|VP9)/ig;
 // Updated REGEX_AUDIO_CODECS to catch "5 1" and "5.1"
 const REGEX_AUDIO_CODECS = /(AAC|DD5\.1|AC3|DTS|Opus|MP3|\b5\.1\b|\b5\s1\b)/ig;
@@ -36,8 +36,8 @@ const REGEX_SUBTITLE = /(ESub|Subtitles?)/ig;
 const REGEX_FILE_EXTENSION = /\.(mkv|mp4|avi|mov|flv|wmv|webm|m4v)\b/ig;
 const REGEX_WEBSITE_DOMAIN = /\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi;
 const REGEX_RELEASE_GROUP = /(?:\[\w+\]|\(\w+\))$/;
-// New regex for single characters with spaces, including 'EP' and other potential junk
-const REGEX_JUNK_CHARACTERS = /\s+(?:[A-Z]|\d|\bEP\b|\bS\b|\bE\b)\s+/ig;
+// New regex for single characters with space before and after, plus 'EP' and other specific junk.
+const REGEX_JUNK_CHARACTERS = /\s+(?:[A-Z]|\d|\bEP\b|\bS\b|\bE\b|[\+\.])/ig; // Added [\+\.] to catch stray pluses or periods
 
 
 // --- Language Map ---
