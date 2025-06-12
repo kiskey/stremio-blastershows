@@ -2,7 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { config } from '../config'; // Import config to access new tracker settings
 import redisClient, { hgetall, hset, hmset, zadd, zrangebyscore, del } from '../redis';
-import { processThread } from './processor'; // Ensure processThread is imported
+import { processThread, getUniqueThreadId } from './processor'; // Ensure processThread is imported, getUniqueThreadId also
 import { logger } from '../utils/logger';
 import { 
   normalizeTitle, 
@@ -130,29 +130,6 @@ function discoverThreadUrls(html, baseUrl) {
     }
   });
   return Array.from(uniqueThreadUrls); // Convert Set back to Array
-}
-
-/**
- * Extracts a unique numerical thread ID from a forum topic URL.
- * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
- * @param threadUrl The URL of the forum thread.
- * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
- */
-function getUniqueThreadId(threadUrl) {
-  const url = new URL(threadUrl);
-  // Expected path format: /index.php?/forums/topic/<NUMBER>-<TITLE>/
-  const pathSegments = url.pathname.split('/');
-  // Find the segment that starts with a number and contains a hyphen
-  // e.g., "133067-mercy-for-none-s01-..."
-  const topicSegment = pathSegments.find(segment => /^\d+-/.test(segment));
-
-  if (topicSegment) {
-    return topicSegment.split('-')[0]; // Extract just the number
-  } else {
-    // Fallback if the numerical ID pattern is not found
-    logger.warn(`Could not extract numerical thread ID from URL: ${threadUrl}. Using base64 encoding.`);
-    return Buffer.from(threadUrl).toString('base64');
-  }
 }
 
 /**
