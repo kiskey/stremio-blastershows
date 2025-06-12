@@ -1,11 +1,25 @@
-const redisClient = require('../../src/redis'); // Import redisClient instance directly
-const { config } = require('../../src/config');
-const { logger } = require('../utils/logger');
-const { normalizeTitle, fuzzyMatch } = require('../../src/parser/title');
+const redisClient = require('../../src/redis.js'); // Direct import of the default exported redisClient instance
+const { config } = require('../../src/config.js'); // Use .js extension
+const { logger } = require('../../src/utils/logger.js'); // Use .js extension
+const { 
+  normalizeTitle, 
+  fuzzyMatch, 
+  cleanBaseTitleForCatalog, 
+  cleanStreamDetailsTitle 
+} = require('../../src/parser/title.js'); // Use .js extension
 
 // In-memory cache for meta items to reduce Redis lookups
 const metaCache = new Map();
 const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
+
+/**
+ * @typedef {object} VideoItem
+ * @property {string} id
+ * @property {string} title
+ * @property {Date} released
+ * @property {number} season
+ * @property {number} episode
+ */
 
 /**
  * @typedef {object} StremioStream
@@ -21,98 +35,66 @@ const STREAM_CACHE_TTL_SECONDS = 5 * 60; // 5 minutes for stream cache
 
 /**
  * Handles catalog requests from Stremio.
- * This will return series-season entries as "movie" metas.
- * @param {string} type The type of catalog (expected 'movie').
- * @param {string} id The catalog ID (e.g., 'tamil-content').
+ * @param {string} type The type of catalog (e.g., 'series').
+ * @param {string} id The catalog ID (e.g., 'tamil-web-series').
  * @param {object} extra Stremio extra parameters (e.g., search, skip).
- * @returns {Promise<object>} A Promise resolving to an array of meta objects.
-*/
+ * @returns {Promise<object>} A Promise resolving to an object containing an array of meta objects.
+ */
 async function catalogHandler(type, id, extra) {
   logger.info(`Received catalog request: type=${type}, id=${id}, extra=${JSON.stringify(extra)}`);
   
-  // Catalog type should strictly be 'movie'
-  if (type !== 'movie' || id !== 'tamil-content') {
+  if (type !== 'series' || id !== 'tamil-web-series') {
     logger.warn(`Unsupported catalog request: type=${type}, id=${id}`);
     return { metas: [] };
   }
 
-  let movieGroupKeys = [];
+  let movieKeys = [];
   const searchKeywords = extra.search ? normalizeTitle(extra.search) : null;
 
   try {
     if (searchKeywords) {
       logger.info(`Performing search for: ${searchKeywords}`);
-      const keys = await redisClient.keys('movie:*'); 
+      const keys = await redisClient.keys('movie:*');
       for (const key of keys) {
-        const movieGroupData = await redisClient.hgetall(key);
-        if (movieGroupData && fuzzyMatch(searchKeywords, movieGroupData.originalTitle)) {
-          movieGroupKeys.push(key);
+        const movieData = await redisClient.hgetall(key);
+        if (movieData && fuzzyMatch(searchKeywords, normalizeTitle(movieData.originalTitle || ''))) {
+          movieKeys.push(key);
         }
       }
     } else {
-      movieGroupKeys = await redisClient.keys('movie:*'); 
+      movieKeys = await redisClient.keys('movie:*');
     }
 
-    const metas = await Promise.all(movieGroupKeys.map(async (key) => {
-      try {
-        const movieGroupData = await redisClient.hgetall(key);
-        if (!movieGroupData) {
-          logger.warn(`Missing movie group data for key: ${key}`);
-          return null;
-        }
-
-        let genres = [];
-        if (movieGroupData.languages) {
-            try {
-                genres = JSON.parse(movieGroupData.languages);
-                if (!Array.isArray(genres)) {
-                    logger.warn(`Parsed genres for key ${key} is not an array. Resetting to empty array.`);
-                    genres = [];
-                }
-            } catch (e) {
-                logger.error(`Failed to parse languages JSON for key ${key} in catalogHandler:`, e);
-                logger.logToRedisErrorQueue({
-                    timestamp: new Date().toISOString(),
-                    level: 'ERROR',
-                    message: `Failed to parse languages JSON for key: ${key} in catalogHandler`,
-                    error: e.message
-                });
-                genres = []; 
-            }
-        }
-
-        const meta = {
-          id: movieGroupData.stremioId, 
-          type: 'movie', // STRICTLY keeping "movie" for catalog items
-          name: movieGroupData.originalTitle, // The heavily cleaned series-season display title
-          poster: movieGroupData.posterUrl,
-          posterShape: 'regular',
-          background: movieGroupData.posterUrl,
-          description: `Source Thread: ${movieGroupData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieGroupData.threadStartedTime).toLocaleDateString()}`,
-          releaseInfo: new Date(movieGroupData.threadStartedTime).getFullYear().toString(),
-          imdbRating: 'N/A',
-          genres: genres, 
-          videos: [] // MUST be empty for 'movie' type. Streams come directly from streamHandler.
-        };
-        
-        metaCache.set(meta.id, meta); 
-        return meta;
-      } catch (error) {
-        logger.error(`Error processing movie group data for key ${key} in catalogHandler:`, error);
-        logger.logToRedisErrorQueue({
-            timestamp: new Date().toISOString(),
-            level: 'ERROR',
-            message: `Error processing movie group data for catalog key: ${key}`,
-            error: error.message
-        });
+    const metas = await Promise.all(movieKeys.map(async (key) => {
+      const movieData = await redisClient.hgetall(key);
+      if (!movieData || !movieData.stremioId) { // Ensure stremioId exists
+        logger.warn(`Missing or invalid movie data for key: ${key}`);
         return null;
       }
+
+      const meta = {
+        id: movieData.stremioId,
+        type: 'series',
+        name: movieData.originalTitle,
+        poster: movieData.posterUrl,
+        posterShape: 'regular',
+        background: movieData.posterUrl,
+        description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
+        releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
+        imdbRating: 'N/A',
+        genres: movieData.languages ? JSON.parse(movieData.languages) : [], // Parse languages from JSON
+        videos: movieData.seasons ? JSON.parse(movieData.seasons).map(s => ({ season: s })) : [], // Parse seasons from JSON
+      };
+      
+      metaCache.set(meta.id, meta);
+
+      return meta;
     }));
 
     const filteredMetas = metas.filter(Boolean).sort((a, b) => {
-      const dateA = new Date(metaCache.get(a.id)?.lastUpdated || 0).getTime();
-      const bLastUpdated = metaCache.has(b.id) && metaCache.get(b.id)?.lastUpdated ? new Date(metaCache.get(b.id).lastUpdated).getTime() : 0;
-      return bLastUpdated - dateA;
+      const dateA = new Date(metaCache.get(a.id)?.lastUpdated || 0).getTime(); // lastUpdated might be null from cache
+      const dateB = new Date(metaCache.get(b.id)?.lastUpdated || 0).getTime();
+      return dateB - dateA;
     });
 
     logger.info(`Returning ${filteredMetas.length} catalog items.`);
@@ -131,16 +113,14 @@ async function catalogHandler(type, id, extra) {
 
 /**
  * Handles meta requests from Stremio.
- * Expected ID is the unique series-season ID (e.g., ttsuits-la-2025-s01).
- * @param {string} type The type of content (expected 'movie').
- * @param {string} id The ID of the content (expected the unique movie group ID).
- * @returns {Promise<object>} A Promise resolving to a meta object.
+ * @param {string} type The type of content.
+ * @param {string} id The ID of the content.
+ * @returns {Promise<object>} A Promise resolving to an object containing the meta object.
  */
 async function metaHandler(type, id) {
   logger.info(`Received meta request: type=${type}, id=${id}`);
   
-  // Type should strictly be 'movie'
-  if (type !== 'movie' || !id.startsWith('tt')) {
+  if (type !== 'series' || !id.startsWith('tt')) {
     logger.warn(`Unsupported meta request: type=${type}, id=${id}`);
     return { meta: null };
   }
@@ -151,49 +131,63 @@ async function metaHandler(type, id) {
   }
 
   try {
-    const movieGroupData = await redisClient.hgetall(`movie:${id}`); 
-    if (!movieGroupData) {
-      logger.info(`Movie group with Stremio ID ${id} not found in Redis.`);
+    const movieData = await redisClient.hgetall(`movie:${id}`);
+    if (!movieData) {
+      logger.info(`Movie with Stremio ID ${id} not found in Redis.`);
       return { meta: null };
     }
 
-    let genres = [];
-    if (movieGroupData.languages) {
-        try {
-            genres = JSON.parse(movieGroupData.languages);
-            if (!Array.isArray(genres)) {
-                logger.warn(`Parsed genres for ID ${id} is not an array. Resetting to empty array.`);
-                genres = [];
-            }
-        } catch (e) {
-            logger.error(`Failed to parse languages JSON for ID ${id} in metaHandler:`, e);
-            logger.logToRedisErrorQueue({
-                timestamp: new Date().toISOString(),
-                level: 'ERROR',
-                message: `Failed to parse languages JSON for ID: ${id} in metaHandler`,
-                error: e.message
-            });
-            genres = []; 
-        }
-    }
-
+    /** @type {object} */
     const meta = {
-      id: movieGroupData.stremioId,
-      type: 'movie', // STRICTLY keeping "movie" for meta details
-      name: movieGroupData.originalTitle, // Heavily cleaned series-season display title
-      poster: movieGroupData.posterUrl,
+      id: movieData.stremioId,
+      type: 'series',
+      name: movieData.originalTitle,
+      poster: movieData.posterUrl,
       posterShape: 'regular',
-      background: movieGroupData.posterUrl,
-      description: `Source Thread: ${movieGroupData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieGroupData.threadStartedTime).toLocaleDateString()}`,
-      releaseInfo: new Date(movieGroupData.threadStartedTime).getFullYear().toString(),
+      background: movieData.posterUrl,
+      description: `Source Thread: ${movieData.associatedThreadId || 'N/A'}\nStarted: ${new Date(movieData.threadStartedTime).toLocaleDateString()}`,
+      releaseInfo: new Date(movieData.threadStartedTime).getFullYear().toString(),
       imdbRating: 'N/A',
-      genres: genres, 
-      videos: [] // CRUCIAL: MUST be empty for 'movie' type. Streams are returned by streamHandler.
+      genres: movieData.languages ? JSON.parse(movieData.languages) : [],
+      videos: [], 
     };
 
-    metaCache.set(id, meta); 
+    const streamKeys = await redisClient.keys(`stream:${id}:s*`); // Updated to 'stream:' prefix for streams
+    const videos = await Promise.all(streamKeys.map(async (key) => {
+      const streamData = await redisClient.hgetall(key); // This is stream data, not episode data
+      if (!streamData) {
+        logger.warn(`Missing stream data for key: ${key}`);
+        return null;
+      }
+      
+      // Parse season and episode from key
+      // Example key: stream:ttbeast-games-2024-s01:s1e1:720p-INFO_HASH
+      const parts = key.split(':');
+      const seasonMatch = parts[2]?.match(/s(\d+)/); 
+      const episodeMatch = parts[3]?.match(/e(\d+)/); 
 
-    logger.info(`Returning meta for ID: ${id}.`);
+      const season = seasonMatch ? parseInt(seasonMatch[1], 10) : (streamData.seasonNumber ? parseInt(streamData.seasonNumber, 10) : 1);
+      const episode = episodeMatch ? parseInt(episodeMatch[1], 10) : (streamData.episodeNumber ? parseInt(streamData.episodeNumber, 10) : 1);
+
+      return {
+        id: key, // Unique ID for the video (stream)
+        title: streamData.title, // Use the stream's title
+        released: streamData.timestamp ? new Date(streamData.timestamp) : new Date(),
+        season: season,
+        episode: episode,
+      };
+    }));
+
+    meta.videos = videos.filter(Boolean).sort((a, b) => {
+      if (a.season !== b.season) {
+        return a.season - b.season;
+      }
+      return a.episode - b.episode;
+    });
+
+    metaCache.set(id, meta);
+
+    logger.info(`Returning meta for ID: ${id}`);
     return { meta: meta };
   } catch (error) {
     logger.error(`Error in metaHandler for ID ${id}:`, error);
@@ -204,149 +198,76 @@ async function metaHandler(type, id) {
       error: error.message,
       url: id
     });
-    return { meta: null };
+    return { meta: null }; // Return null meta on error
   }
 }
 
 /**
  * Handles stream requests from Stremio.
- * Expected 'id' is the unique series-season ID (e.g., ttsuits-la-2025-s01).
- * This function will return ALL associated streams (episodes/qualities) for that "movie" group.
- * @param {string} type The type of content (expected 'movie').
- * @param {string} id The ID of the content (expected the unique movie group ID).
- * @returns {Promise<object>} A Promise resolving to an array of stream objects.
+ * @param {string} type The type of content.
+ * @param {string} id The ID of the content.
+ * @returns {Promise<object>} A Promise resolving to an object containing an array of stream objects.
  */
 async function streamHandler(type, id) {
   logger.info(`Received stream request: type=${type}, id=${id}`);
-  logger.debug(`Stream request ID received by streamHandler: ${id}`);
 
-  // Type should strictly be 'movie'
-  if (type !== 'movie' || !id.startsWith('tt')) {
-      logger.warn(`Unsupported stream request: type=${type}, id=${id}`);
-      return { streams: [] };
-  }
+  // Stremio ID for streamHandler is actually the `id` of the video object obtained from metaHandler.
+  // This `id` is the full stream key: `stream:ttbeast-games-2024-s01:s1e1:720p-INFO_HASH`
+  const streamKey = id; 
 
-  const streams = [];
   try {
-      // Fetch ALL individual streams associated with this movie group ID
-      const streamDataKeys = await redisClient.keys(`stream:${id}:*`); 
-      logger.debug(`Found ${streamDataKeys.length} stream data keys for movie group ID ${id}: ${JSON.stringify(streamDataKeys)}`);
-
-      if (streamDataKeys.length === 0) {
-          logger.warn(`No stream data found for movie group ID: ${id}.`);
-          return { streams: [] };
-      }
-
-      // Fetch details for all found stream data keys
-      for (const streamDataKey of streamDataKeys) {
-        try {
-            const streamData = await redisClient.hgetall(streamDataKey); 
-            logger.debug(`Retrieved streamData for ${streamDataKey}:`, streamData); 
-
-            if (!streamData || !streamData.infoHash) {
-                logger.warn(`Stream data or infoHash not found for stream key: ${streamDataKey}. Skipping.`);
-                logger.logToRedisErrorQueue({
-                    timestamp: new Date().toISOString(),
-                    level: 'WARN',
-                    message: `Stream key ${streamDataKey} has no infoHash or missing data`,
-                    url: streamDataKey
-                });
-                continue; 
-            }
-
-            let sourcesArray = [];
-            try {
-              if (streamData.sources) {
-                sourcesArray = JSON.parse(streamData.sources);
-                  if (!Array.isArray(sourcesArray)) {
-                      logger.warn(`Parsed sources for stream key ${streamDataKey} is not an array. Resetting to empty array.`);
-                      sourcesArray = [];
-                  }
-              }
-            } catch (e) {
-              logger.error(`Failed to parse sources for stream key ${streamDataKey}:`, e);
-              logger.logToRedisErrorQueue({
-                  timestamp: new Date().toISOString(),
-                  level: 'ERROR',
-                  message: `Failed to parse sources JSON for stream key: ${streamDataKey}`,
-                  error: e.message
-              });
-              sourcesArray = []; 
-            }
-
-            const stream = { 
-              name: streamData.name, // "TamilShows - 1080p"
-              title: streamData.title, // "Suits LA (2025) S01 EP11 - HQ"
-              infoHash: streamData.infoHash,
-              sources: sourcesArray,
-            };
-            
-            streams.push(stream);
-            logger.info(`Added stream for stream key: ${streamDataKey}.`);
-        } catch (error) {
-            logger.error(`Error processing stream data for stream key ${streamDataKey} in streamHandler:`, error);
-            logger.logToRedisErrorQueue({
-              timestamp: new Date().toISOString(),
-              level: 'ERROR',
-              message: `Error processing stream data for stream key: ${streamDataKey}`,
-              error: error.message,
-              url: streamDataKey
-            });
-        }
-      }
-  } catch (error) {
-      logger.error(`Error fetching stream data keys for movie group ID ${id} in streamHandler:`, error);
-      logger.logToRedisErrorQueue({
-        timestamp: new Date().toISOString(),
-        level: 'ERROR',
-        message: `Error fetching stream data keys for movie group ID: ${id}`,
-        error: error.message,
-        url: id
-      });
-  }
-
-  logger.info(`Returning ${streams.length} streams for movie group ID: ${id}.`);
-  // Sort streams for consistent display (e.g., by resolution descending, then episode)
-  streams.sort((a, b) => {
-    // Attempt to extract episode number for primary sort
-    const getEpisodeNumber = (title) => {
-      const match = title.match(/EP(?:P)?(\d+)/i);
-      return match ? parseInt(match[1], 10) : 0; // Default to 0 if no episode number
-    };
-
-    // Get resolution value for secondary sort (descending)
-    const getResolutionValue = (name) => {
-        const resMatch = name.match(/(\d{3,4}p|4K)/i);
-        if (resMatch) {
-            const res = resMatch[1].toLowerCase();
-            if (res === '4k') return 4000;
-            return parseInt(res.replace('p', ''));
-        }
-        return 0; // Default
-    };
-
-    const episodeA = getEpisodeNumber(a.title || '');
-    const episodeB = getEpisodeNumber(b.title || '');
-
-    if (episodeA !== episodeB) {
-        return episodeA - episodeB; // Sort episodes ascending
+    const streamData = await redisClient.hgetall(streamKey);
+    if (!streamData) {
+      logger.warn(`Stream with key ${streamKey} not found in Redis.`);
+      return { streams: [] };
     }
 
-    // If episodes are the same, sort by resolution (descending)
-    return getResolutionValue(b.name || '') - getResolutionValue(a.name || '');
-  });
-  return { streams: streams }; 
+    let sourcesArray = [];
+    try {
+      if (streamData.sources) {
+        sourcesArray = JSON.parse(streamData.sources);
+      }
+    } catch (e) {
+      logger.error(`Failed to parse sources for key ${streamKey}:`, e);
+    }
+
+    /** @type {StremioStream} */
+    const stream = { 
+      name: streamData.name,
+      title: streamData.title,
+      infoHash: streamData.infoHash,
+      sources: sourcesArray,
+    };
+    
+    if (!stream.infoHash) {
+        logger.warn(`Stream for key ${streamKey} has no infoHash. Skipping.`);
+        return { streams: [] };
+    }
+
+    logger.info(`Returning 1 stream for key ${streamKey}.`);
+    return { streams: [stream] };
+  } catch (error) {
+    logger.error(`Error in streamHandler for ID ${id}:`, error);
+    logger.logToRedisErrorQueue({
+      timestamp: new Date().toISOString(),
+      level: 'ERROR',
+      message: `Error in streamHandler for ID: ${id}`,
+      error: error.message,
+      url: id
+    });
+    return { streams: [] };
+  }
 }
 
 /**
  * Handles search requests from Stremio.
- * @param {string} type The type of content (expected 'movie').
- * @param {string} id The catalog ID (e.g., 'tamil-content').
+ * @param {string} type The type of content.
+ * @param {string} id The catalog ID (e.g., 'tamil-web-series').
  * @param {object} extra Stremio extra parameters including search.
- * @returns {Promise<object>} A Promise resolving to an array of meta objects.
+ * @returns {Promise<object>} A Promise resolving to an object containing an array of meta objects.
  */
 async function searchHandler(type, id, extra) {
-  logger.info(`Received search request (delegated to catalogHandler): type=${type}, id=${id}, extra=${JSON.stringify(extra)}`);
+  logger.info(`Received search request: type=${type}, id=${id}, extra=${JSON.stringify(extra)}`);
   return catalogHandler(type, id, extra);
 }
 
@@ -354,5 +275,5 @@ module.exports = {
   catalogHandler,
   metaHandler,
   streamHandler,
-  searchHandler,
+  searchHandler
 };
