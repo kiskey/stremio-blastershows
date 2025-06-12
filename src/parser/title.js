@@ -14,26 +14,29 @@ const { logger } = require('../utils/logger');
  * @property {string[]} resolutions - e.g., ["720p", "1080p", "4K"]
  * @property {string[]} qualityTags - e.g., ["HQ HDRip", "WEB-DL"]
  * @property {string[]} codecs - e.g., ["x264", "x265", "HEVC"]
- * @property {string[]} audioCodecs - e.g., ["AAC", "DD5.1", "AC3", "DTS"]
+ * @property {string[]} audioCodecs - e.g., ["AAC", "DD5.1|AC3", "DTS"]
  * @property {string[]} sizes - e.g., ["1.2GB", "600MB"]
  * @property {boolean} [hasESub] - True if English subtitles are indicated.
  * @property {string} originalTitle - The original raw title string.
  */
 
 // --- Regex Patterns ---
-const REGEX_YEAR = /\(?(\d{4})\)?/ig; // Added global and ignore case
+const REGEX_YEAR = /\(?(\d{4})\)?/ig;
 const REGEX_SEASON = /(?:S(\d+)(?:-\s*S?(\d+))?|Season\s*(\d+)(?:-\s*Season\s*(\d+))?|s(\d+)(?:-s(\d+))?|season\s*(\d+)(?:-(\d+))?|complete series|season\s*pack|full\s*season)/ig;
 const REGEX_EPISODE = /(?:E(?:P)?(\d+)(?:-(\d+))?|Episode(?:s)?\s*(\d+)(?:-(\d+))?|e(\d+)(?:-e(\d+))?|ep(\d+)(?:-ep(\d+))?)/ig;
-const REGEX_RESOLUTION = /(\d{3,4}p|4K|HD|HQ)/ig; // Added HD, HQ
-const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b)/ig; // Added '-' for language variations
+const REGEX_RESOLUTION = /(\d{3,4}p|4K|HD|HQ)/ig;
+// Updated REGEX_LANGUAGES to capture various forms: [lang+lang], lang-lang, lang lang, standalone lang
+const REGEX_LANGUAGES = /(?:\[\s*(?:(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi)\s*(?:[+\s-]\s*(?:Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Por|Multi))*)\s*\]|(?:tam|tel|kan|hin|eng|mal|kor|chi|por)\b|Tamil|Telugu|Kannada|Hindi|Eng|Malayalam|Korean|Chinese|Portugu\s*ese)\b/ig;
 const REGEX_CODECS = /(x264|x265|HEVC|AVC|VP9)/ig;
 const REGEX_AUDIO_CODECS = /(AAC|DD5\.1|AC3|DTS|Opus|MP3)/ig;
-const REGEX_QUALITY_TAGS = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR|HQRip|HDRip)/ig; // Added HQRip, HDRip explicitly
+const REGEX_QUALITY_TAGS = /(?:HQ\s*HDRip|WEB-DL|HDRip|BluRay|HDTV|WEBRip|BDRip|DVDRip|UNTOUCHED|HDR|DDP|WEB|RIP|BR|HQRip|HDRip)/ig;
 const REGEX_SIZE = /(\d+\.?\d*\s*[KMGT]?B)/ig;
 const REGEX_SUBTITLE = /(ESub|Subtitles?)/ig;
 const REGEX_FILE_EXTENSION = /\.(mkv|mp4|avi|mov|flv|wmv|webm|m4v)\b/ig;
 const REGEX_WEBSITE_DOMAIN = /\b(www\.[a-zA-Z0-9-]+\.(?:[a-z]{2,}|[a-z]{2,}(?:\.[a-z]{2,})+))\b/gi;
-const REGEX_RELEASE_GROUP = /(?:\[\w+\]|\(\w+\))$/; // e.g., [TAG] or (GROUP) at the end
+const REGEX_RELEASE_GROUP = /(?:\[\w+\]|\(\w+\))$/;
+// New regex for single characters with spaces, including 'EP' and other potential junk
+const REGEX_JUNK_CHARACTERS = /\s+(?:[A-Z]|\d|\bEP\b|\bS\b|\bE\b)\s+/ig;
 
 
 // --- Language Map ---
@@ -193,6 +196,7 @@ function extractResolutions(text) {
 
 /**
  * Extracts and normalizes languages from a string.
+ * Handles variations like "Tamil Telugu Hindi", "tam+hin", "eng", "ml", "jap", "kor".
  * @param {string} text
  * @returns {string[]}
  */
@@ -202,13 +206,15 @@ function extractLanguages(text) {
     let match;
     while ((match = REGEX_LANGUAGES.exec(text)) !== null) {
         const matchedText = match[0];
-        // Now splits by '+', space, or '-'
+        // Split by '+', space, or '-' to handle combinations
         const cleanParts = matchedText.replace(/[\[\]]/g, '').split(/[+\s-]/).filter(Boolean);
         cleanParts.forEach(part => {
             const mappedLang = LANGUAGE_MAP[part.toLowerCase()];
             if (mappedLang) {
                 languages.add(mappedLang);
-            } else if (part) {
+            } else if (part.length <= 3 && part.match(/^[a-z]{2,3}$/i)) { // Catch 2-3 letter codes like 'jap', 'kor', 'ml'
+                languages.add(part.toLowerCase());
+            } else if (part) { // Add original part if no mapping, but is not empty
                 languages.add(part.toLowerCase());
             }
         });
@@ -329,18 +335,19 @@ function parseTitle(titleString) {
     REGEX_WEBSITE_DOMAIN,
     REGEX_FILE_EXTENSION,
     REGEX_RELEASE_GROUP,
-    REGEX_SUBTITLE, // Extract hasESub before stripping
+    REGEX_SUBTITLE,
     REGEX_SIZE,
     REGEX_AUDIO_CODECS,
     REGEX_CODECS,
     REGEX_QUALITY_TAGS,
     REGEX_RESOLUTION,
-    REGEX_LANGUAGES, // Extract languages before stripping
-    REGEX_EPISODE,   // Extract episodes before stripping
-    REGEX_SEASON,    // Extract seasons before stripping
-    REGEX_YEAR,      // Extract year before stripping
+    REGEX_LANGUAGES, // Languages must be stripped after extraction
+    REGEX_EPISODE,   // Episodes must be stripped after extraction
+    REGEX_SEASON,    // Seasons must be stripped after extraction
+    REGEX_YEAR,      // Year must be stripped after extraction
     /TamilShow\s*-\s*(?:\d{3,4}p|4K|Unknown Res)\s*-\s*/gi, // Addon's internal prefix
     /[\(\[]\s*(?:[A-Z0-9\s.-]+)\s*[\)\]]/g, // Generic content in parentheses/brackets (e.g., source tags, random labels)
+    REGEX_JUNK_CHARACTERS, // New: Suppress single characters and 'EP'
     /[\-+\._]/g, // Replace common separators with spaces
   ];
 
