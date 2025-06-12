@@ -2,10 +2,12 @@ const dotenv = require('dotenv');
 const path = require('path');
 
 // Load environment variables from .env file
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
+// Ensure the path is correct relative to where the script is executed
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 /**
  * Log levels for controlling logging verbosity.
+ * @enum {number}
  */
 const LogLevel = {
   DEBUG: 0,
@@ -18,6 +20,22 @@ const LogLevel = {
 /**
  * Application configuration object, loaded from environment variables.
  * Provides default values if environment variables are not set.
+ * @type {object}
+ * @property {number} PORT
+ * @property {string} REDIS_URL
+ * @property {string} FORUM_URL
+ * @property {boolean} PURGE_ON_START
+ * @property {number} INITIAL_PAGES
+ * @property {number} CRAWL_INTERVAL - in seconds
+ * @property {number} THREAD_REVISIT_HOURS - in hours
+ * @property {number} MAX_CONCURRENCY
+ * @property {string} DOMAIN_MONITOR
+ * @property {string} ADDON_ID
+ * @property {string} ADDON_NAME
+ * @property {string} ADDON_DESCRIPTION
+ * @property {LogLevel} LOG_LEVEL
+ * @property {number} TRACKER_UPDATE_INTERVAL_HOURS
+ * @property {string} NGOSANG_TRACKERS_URL
  */
 const config = {
   PORT: parseInt(process.env.PORT || '7000', 10),
@@ -29,13 +47,10 @@ const config = {
   THREAD_REVISIT_HOURS: parseInt(process.env.THREAD_REVISIT_HOURS || '24', 10),
   MAX_CONCURRENCY: parseInt(process.env.MAX_CONCURRENCY || '8', 10),
   DOMAIN_MONITOR: process.env.DOMAIN_MONITOR || 'http://1tamilblasters.net',
-  ADDON_ID: process.env.ADDON_ID || 'community.tamilshows-addon',
-  ADDON_NAME: process.env.ADDON_NAME || 'TamilShows Web Series',
-  ADDON_DESCRIPTION: process.env.ADDON_DESCRIPTION || 'Auto-updating Tamil web series catalog',
-  // Corrected LOG_LEVEL parsing to map string to enum value
-  LOG_LEVEL: LogLevel[process.env.LOG_LEVEL?.toUpperCase()] !== undefined 
-             ? LogLevel[process.env.LOG_LEVEL.toUpperCase()] 
-             : LogLevel.INFO, 
+  ADDON_ID: process.env.ADDON_ID || 'community.tamilshows-addon', // Allow override from env
+  ADDON_NAME: process.env.ADDON_NAME || 'TamilShows Web Series', // Allow override from env
+  ADDON_DESCRIPTION: process.env.ADDON_DESCRIPTION || 'Auto-updating Tamil web series catalog', // Allow override from env
+  LOG_LEVEL: LogLevel[process.env.LOG_LEVEL?.toUpperCase()] || LogLevel.INFO, // Default to INFO
   TRACKER_UPDATE_INTERVAL_HOURS: parseInt(process.env.TRACKER_UPDATE_INTERVAL_HOURS || '6', 10), // Default to 6 hours
   NGOSANG_TRACKERS_URL: process.env.NGOSANG_TRACKERS_URL || 'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt', // Default URL
 };
@@ -45,5 +60,5 @@ console.log('App Configuration Loaded:', config);
 
 module.exports = {
   config,
-  LogLevel, // Export LogLevel enum so it can be used by logger.js
+  LogLevel
 };
