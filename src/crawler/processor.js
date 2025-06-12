@@ -1,39 +1,41 @@
-const axios = require('axios');
-const cheerio = require('cheerio'); // Changed import for Cheerio
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 // Import MagnetData and ThreadContent interfaces from engine.ts (single source of truth)
-// No longer importing type definitions from a .ts file as we are in .js environment now.
-// The types are for documentation purposes.
-
+import { ThreadContent, MagnetData } from './engine';
 // Correct import and initialization for DOMPurify with JSDOM
-const createDOMPurify = require('dompurify');
-const { JSDOM } = require('jsdom');
-const { parseTitle, normalizeTitle, fuzzyMatch } = require('../parser/title'); // Import title parsing functions
-const { logger } = require('../utils/logger'); // Import the centralized logger
+import createDOMPurify from 'dompurify';
+import { JSDOM } from 'jsdom';
+// Using js-levenshtein for Jaro-Winkler, as specified in requirements.
+import { jaroWinkler } from 'js-levenshtein'; // Still named import, relies on .d.ts
+import { parseTitle } from '../parser/title'; // Import parseTitle
+import { logger } from '../utils/logger'; // Import the centralized logger
 
 /**
- * @typedef {object} MagnetData
- * @property {string} url - The magnet URI.
- * @property {string} name - Full descriptive name.
- * @property {string} [size] - Size of the content.
- * @property {string} [resolution] - Resolution of the content.
+ * @typedef {object} ParsedTitleMetadata
+ * @property {string} title - The full display title of the series/movie, reconstructed with year, season, and episode.
+ * @property {string} baseShowName - The core show name, heavily cleaned, without any year, season, or episode reconstruction.
+ * @property {number} [year] - The release year.
+ * @property {number} [season] - The season number (optional).
+ * @property {number} [episodeStart] - The starting episode number (optional).
+ * @property {number} [episodeEnd] - The ending episode number (optional, for multi-episode releases).
+ * @property {string[]} languages - e.g., ["ta", "ml"]
+ * @property {string[]} resolutions - e.g., ["720p", "1080p", "4K"]
+ * @property {string[]} qualityTags - e.g., ["HQ HDRip", "WEB-DL"]
+ * @property {string[]} codecs - e.g., ["x264", "x265", "HEVC"]
+ * @property {string[]} audioCodecs - e.g., ["AAC", "DD5.1|AC3", "DTS"]
+ * @property {string[]} sizes - e.g., ["1.2GB", "600MB"]
+ * @property {boolean} [hasESub] - True if English subtitles are indicated.
+ * @property {string} originalTitle - The original raw title string.
  */
 
-/**
- * @typedef {object} ThreadContent
- * @property {string} title
- * @property {string} posterUrl
- * @property {MagnetData[]} magnets
- * @property {string} timestamp
- * @property {string} threadId
- * @property {string} originalUrl
- * @property {string} threadStartedTime
- */
+// Removed duplicate MagnetData interface definition.
+// It is now imported from engine.ts as the single source of truth.
 
 /**
  * Fetches the content of a given URL with error handling and retries.
- * @param {string} url The URL to fetch.
- * @param {number} [retries=3] Remaining retries.
- * @returns {Promise<string|null>} The HTML content as a string, or null if fetching fails.
+ * @param url The URL to fetch.
+ * @param retries Remaining retries.
+ * @returns The HTML content as a string, or null if fetching fails.
  */
 async function fetchHtmlForProcessing(url, retries = 3) {
   try {
@@ -68,8 +70,8 @@ async function fetchHtmlForProcessing(url, retries = 3) {
 
 /**
  * Validates a magnet URI using a BTIH regex.
- * @param {string} uri The magnet URI string.
- * @returns {boolean} True if the URI is a valid magnet, false otherwise.
+ * @param uri The magnet URI string.
+ * @returns True if the URI is a valid magnet, false otherwise.
  */
 function validateMagnetUri(uri) {
   // BTIH regex for magnet URI validation
@@ -79,8 +81,8 @@ function validateMagnetUri(uri) {
 
 /**
  * Extracts the 40-character BTIH (BitTorrent Info Hash) from a magnet URI.
- * @param {string} magnetUri The magnet URI string.
- * @returns {string|null} The 40-character BTIH as a string, or null if not found/invalid.
+ * @param magnetUri The magnet URI string.
+ * @returns The 40-character BTIH as a string, or null if not found/invalid.
  */
 function extractBtihFromMagnet(magnetUri) {
   const match = magnetUri.match(/urn:btih:([a-zA-Z0-9]{40})/);
@@ -92,8 +94,8 @@ function extractBtihFromMagnet(magnetUri) {
 
 /**
  * Parses the 'dn' (display name) parameter from a magnet URI.
- * @param {string} magnetUri The magnet URI string.
- * @returns {string|null} The decoded display name string, or null if not found.
+ * @param magnetUri The magnet URI string.
+ * @returns The decoded display name string, or null if not found.
  */
 function parseDnFromMagnetUri(magnetUri) {
   try {
@@ -111,8 +113,8 @@ function parseDnFromMagnetUri(magnetUri) {
 /**
  * Extracts a unique numerical thread ID from a forum topic URL.
  * Handles URLs like: https://www.1tamilblasters.fi/index.php?/forums/topic/133067-mercy-for-none-s01-...
- * @param {string} threadUrl The URL of the forum thread.
- * @returns {string} The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
+ * @param threadUrl The URL of the forum thread.
+ * @returns The numerical thread ID as a string, or a base64 encoded URL if no ID is found.
  */
 function getUniqueThreadId(threadUrl) {
   const url = new URL(threadUrl);
@@ -132,34 +134,9 @@ function getUniqueThreadId(threadUrl) {
 }
 
 /**
- * Parses resolution and size from a magnet name/filename.
- * Example magnet name: "Cooku With Comali (2025) S06E01 [Tamil - 1080p HD AVC UNTOUCHED - x264 - AAC - 7GB].mkv"
- * @param {string} magnetName The name extracted from the magnet URI's 'dn' parameter or torrent title.
- * @returns {{ resolution?: string, size?: string }} An object containing parsed resolution and size, or null if not found.
- */
-function parseResolutionAndSizeFromMagnetName(magnetName) {
-  const result = {};
-
-  // Regex for resolution (e.g., 1080p, 720p, 480p, 4K)
-  const resolutionMatch = magnetName.match(/(\d{3,4}p|4K)/i);
-  if (resolutionMatch) {
-    result.resolution = resolutionMatch[1];
-  }
-
-  // Regex for size (e.g., 7GB, 550MB, 2.4GB)
-  const sizeMatch = magnetName.match(/(\d+\.?\d*\s*[KMGT]?B)/i);
-  if (sizeMatch) {
-    result.size = sizeMatch[1];
-  }
-
-  return result;
-}
-
-
-/**
  * Processes a single forum thread page to extract relevant content.
- * @param {string} threadUrl The URL of the forum thread page.
- * @returns {Promise<ThreadContent | null>} A Promise resolving to ThreadContent object or null if processing fails.
+ * @param threadUrl The URL of the forum thread page.
+ * @returns A Promise resolving to ThreadContent object or null if processing fails.
  */
 async function processThread(threadUrl) {
   logger.info(`Processing thread: ${threadUrl}`);
@@ -202,13 +179,17 @@ async function processThread(threadUrl) {
   // This might need refinement based on exact forum structure.
   const posterElement = $('div.ipsType_normal.ipsType_richText img.ipsImage').first();
   let posterUrl = posterElement.attr('src') || '';
-  if (!posterUrl) {
-    // Fallback: Check for meta og:image or a common placeholder
+
+  // UPDATED: Robust poster URL fallback logic
+  const defaultPlaceholderSvg = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="300" viewBox="0 0 200 300"><rect width="200" height="300" fill="#101010"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="sans-serif" font-size="20" fill="#E0E0E0">No Poster</text></svg>`;
+  const knownBadPosterUrl = 'https://www.1tamilblasters.fi/applications/core/interface/js/spacer.png';
+
+  if (!posterUrl || posterUrl === knownBadPosterUrl) {
+    // Fallback: Check for meta og:image
     posterUrl = $('meta[property="og:image"]').attr('content') || '';
-    if (!posterUrl) {
-        logger.warn(`No specific poster URL found for ${threadUrl}. Using placeholder.`);
-        // Placeholder for missing poster URL
-        posterUrl = `https://placehold.co/200x300/101010/E0E0E0?text=${encodeURIComponent(title || 'No Poster')}`;
+    if (!posterUrl || posterUrl === knownBadPosterUrl) {
+        logger.warn(`No specific or valid poster URL found for ${threadUrl}. Using data URI placeholder.`);
+        posterUrl = defaultPlaceholderSvg;
     }
   }
 
@@ -233,8 +214,6 @@ async function processThread(threadUrl) {
   // Iterate over all magnet-plugin links
   $('a.magnet-plugin').each((_index, magnetLinkElement) => {
       const magnetUrl = $(magnetLinkElement).attr('href');
-      logger.debug(`Found potential magnet URL: ${magnetUrl}`); // Debug log for every found magnet URL
-
       if (magnetUrl && validateMagnetUri(magnetUrl)) {
           let descriptiveName = null;
           
@@ -257,7 +236,12 @@ async function processThread(threadUrl) {
             }
           }
           
-          const { resolution, size } = parseResolutionAndSizeFromMagnetName(descriptiveName);
+          // NEW: Fully parse the descriptive name of the magnet
+          const parsedMagnetMetadata = parseTitle(descriptiveName);
+
+          // Get resolution and size from the parsed metadata of the magnet itself
+          const resolution = parsedMagnetMetadata.resolutions.length > 0 ? parsedMagnetMetadata.resolutions[0] : undefined;
+          const size = parsedMagnetMetadata.sizes.length > 0 ? parsedMagnetMetadata.sizes[0] : undefined;
           
           // Ensure a unique BTIH for the stream key
           const btih = extractBtihFromMagnet(magnetUrl);
@@ -265,9 +249,10 @@ async function processThread(threadUrl) {
           if (btih) {
             magnets.push({
                 url: magnetUrl,
-                name: descriptiveName, // Use the extracted descriptive name
+                name: descriptiveName, // Keep original descriptive name for debugging if needed
                 size: size,
-                resolution: resolution
+                resolution: resolution,
+                parsedMetadata: parsedMagnetMetadata // Store the full parsed metadata for this magnet
             });
           } else {
             logger.warn(`Could not extract BTIH for magnet: ${magnetUrl} in thread ${threadUrl}`);
@@ -305,7 +290,10 @@ async function processThread(threadUrl) {
 }
 
 module.exports = {
-  processThread,
-  getUniqueThreadId, // Export if needed elsewhere
-  extractBtihFromMagnet // Export if needed elsewhere
+  fetchHtmlForProcessing,
+  validateMagnetUri,
+  extractBtihFromMagnet,
+  parseDnFromMagnetUri,
+  getUniqueThreadId,
+  processThread
 };
