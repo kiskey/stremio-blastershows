@@ -1,5 +1,5 @@
 const Redis = require('ioredis');
-const { config } = require('./config');
+const { config } = require('./config.js'); // Ensure .js extension
 
 // Initialize Redis client using the REDIS_URL from configuration
 const redisClient = new Redis(config.REDIS_URL);
@@ -30,7 +30,9 @@ async function purgeRedis() {
   }
 }
 
-// Export the redisClient instance as the default and primary export.
+// Attach purgeRedis directly to the redisClient object
+redisClient.purgeRedis = purgeRedis;
+
+// Export the redisClient instance as the primary export.
 // Other modules will import this client and call its methods directly.
 module.exports = redisClient;
-module.exports.purgeRedis = purgeRedis; // Still export purgeRedis if needed
