@@ -1,35 +1,30 @@
 {
   "name": "tamilshows-addon",
   "version": "1.0.0",
-  "description": "Stremio addon for Tamil web series and TV shows.",
+  "description": "Stremio addon for Tamil Web Series",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js",
+    "dev": "node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "stremio",
     "addon",
     "tamil",
-    "webseries",
-    "tvshows",
+    "web-series",
     "crawler"
   ],
-  "author": "Your Name",
+  "author": "Your Name/Organization",
   "license": "MIT",
   "dependencies": {
     "axios": "^1.7.2",
     "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
     "ioredis": "^5.4.1",
-    "jsdom": "^24.1.0",
+    "stremio-addon-sdk": "^1.2.2",
     "dompurify": "^3.1.5",
-    "jaro-winkler": "^0.2.8"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
+    "jsdom": "^24.1.0",
+    "js-levenshtein": "^1.1.6",
+    "dotenv": "^16.4.5"
   }
 }
